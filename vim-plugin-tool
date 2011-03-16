@@ -1,0 +1,394 @@
+#!/usr/bin/python
+
+"""
+Publish Vim plug-ins without all the tedious steps involved in doing so
+
+Author: Peter Odding <peter@peterodding.com>
+Last Change: March 16, 2011
+Homepage: http://github.com/xolox/vim-tools
+License: MIT
+
+This Python script makes it easier for me to publish my Vim plug-ins including
+their auto-load script dependencies. The PLUGIN argument can be a filename
+relative to Vim's plug-in directory or a full path name. Configuration values
+are automatically loaded from the file ~/.vim-plugin-tool.conf.
+"""
+
+import re, os, sys, glob, optparse, ConfigParser
+
+PROG_NAME = os.path.split(sys.argv[0])[1]
+CONFIG_FILE = os.path.expanduser('~/.vim-plugin-tool.conf')
+HOME_DIR = os.environ['HOME']
+VIM_PROFILE = os.path.expanduser('~/.vim')
+PLUGIN_DIR = VIM_PROFILE + '/plugin'
+VERSIONS_SECTION = 'packaged_versions'
+
+class VimPluginTool:
+
+  def __init__(self): # {{{1
+
+    # Prepare the command-line argument / configuration file parsers.
+    self.parser = optparse.OptionParser()
+    self.config = ConfigParser.RawConfigParser()
+
+    # Configure the command-line argument parser.
+    self.parser.set_usage("""%s -ldup PLUGIN
+
+This Python script makes it easy to publish your Vim plug-ins including their
+auto-load dependencies. The PLUGIN argument can be a filename relative to the
+directory %s or a full path name. Note that configuration
+values are automatically loaded from %s.""" % (PROG_NAME, PLUGIN_DIR, CONFIG_FILE))
+    self.parser.add_option('-v', action='store_true', dest='verbose', default=False, help='increase verbosity')
+    self.parser.add_option('-l', action='store_true', dest='do_list_deps', default=False, help='list the auto-load scripts on which a plug-in depends')
+    self.parser.add_option('-i', action='store_true', dest='do_install', default=False, help='install a plug-in by symlinking files into the current directory')
+    self.parser.add_option('-d', action='store_true', dest='do_update_help', default=False, help='generate the documentation for a plug-in based on its README')
+    self.parser.add_option('-u', action='store_true', dest='do_upload_readme', default=False, help='upload a plug-in README to its homepage')
+    self.parser.add_option('-p', action='store_true', dest='do_package_plugin', default=False, help='package a plug-in, its dependencies and help into a ZIP archive')
+    self.parser.add_option('-a', action='store_true', dest='do_all_plugins', default=False, help='perform the selected action(s) for all configured plug-ins')
+    self.parser.add_option('-f', action='store_true', dest='force', default=False, help="don't warn about version numbers and don't extract files from git (normally the last committed version of every file is used so that local changes aren't accidentally included in archives published on www.vim.org)")
+    self.parser.add_option('-b', action='store_true', dest='package_beta', default=False, help="like -f but suffix the packaged archive with '-beta' and don't upload it to www.vim.org")
+
+    # Create a dictionary which read_file() can use to cache results.
+    self.cached_files = {}
+
+  def run(self, args): # {{{1
+
+    # Parse the configuration file, if it exists.
+    if os.path.exists(CONFIG_FILE):
+      self.config.read(CONFIG_FILE)
+
+    # Parse the command-line arguments and act on them.
+    self.opts, args = self.parser.parse_args(args)
+    if self.opts.do_all_plugins:
+      args = [s for s in self.config.sections() if s != VERSIONS_SECTION]
+    if len(args) >= 1:
+      for argument in args:
+        self.plugin_name = argument
+        self.plugin_file = self.find_plugin()
+        if self.opts.do_list_deps or self.opts.do_install or self.opts.do_package_plugin:
+          dependencies = self.find_deps()
+        if self.opts.do_list_deps:
+          self.print_deps(dependencies)
+        if self.opts.do_update_help:
+          if not self.update_helpfile():
+            warning("Failed to find documentation for %s!" % self.plugin_name)
+        if self.opts.do_install:
+          self.install_plugin(dependencies)
+        if self.opts.do_upload_readme:
+          self.upload_readme()
+        if self.opts.do_package_plugin:
+          self.package_plugin(dependencies)
+    if len(args) == 0 or not (        \
+        self.opts.do_list_deps or     \
+        self.opts.do_update_help or   \
+        self.opts.do_install or       \
+        self.opts.do_upload_readme or \
+        self.opts.do_package_plugin):
+      self.parser.print_help()
+    else:
+      message("Done!")
+
+  def find_plugin(self): # {{{1
+
+    # Convert argument to Vim plug-in location?
+    path = '%s/plugin/%s.vim' % (VIM_PROFILE, self.plugin_name)
+    if os.path.exists(path):
+      self.has_main_script = True
+      return path
+
+    # Fall back to single Vim script in repository.
+    repository = canonicalize(self.get_option('git_repository'))
+    scripts = glob.glob(os.path.join(repository, '*.vim'))
+    if len(scripts) == 1:
+      self.has_main_script = False
+      return scripts[0]
+
+  def check_excluded(self, abspath): # {{{1
+    excluded = (self.get_option('exclude_files') or '').split('\n')
+    if os.path.relpath(abspath, VIM_PROFILE) not in excluded:
+      return False
+    else:
+      if self.opts.verbose:
+        message("Excluding %s because it matches `exclude_files'", format_path(abspath))
+      return True
+
+  def find_deps(self): # {{{1
+    scripts = self.scan_script(self.plugin_file, {})
+    def mycmp(a, b):
+      if a[0].startswith(PLUGIN_DIR):
+        return -1
+      if b[0].startswith(PLUGIN_DIR):
+        return 1
+      return cmp(a, b)
+    return sorted(scripts.items(), mycmp)
+
+  def scan_script(self, script, matches):
+    if script in matches:
+      return
+    else:
+      matches[script] = {}
+      content = self.read_file(script)
+      for line in content.splitlines():
+        if not re.match('^\s*"', line): # ignore commented lines.
+          for callee, _ in re.findall('([A-Za-z0-9_]+(#[A-Za-z0-9_]+)+)', line):
+            callee_script = '%s/autoload/%s.vim' % (VIM_PROFILE, '/'.join(callee.split('#')[:-1]))
+            if callee_script != script:
+              if os.path.exists(callee_script):
+                if not self.check_excluded(callee_script):
+                  self.scan_script(callee_script, matches)
+                  matches[script][callee] = True
+              elif os.path.islink(callee_script):
+                # This tripped me up several times so I added the following warning.
+                warning("Found a dangling symbolic link at %s!", callee_script)
+      return matches
+
+  def update_helpfile(self): # {{{1
+    readme = self.find_readme()
+    if os.path.exists(readme):
+      helpfile = self.plugin_name + '.txt'
+      helppath = '%s/doc/%s' % (VIM_PROFILE, helpfile)
+      message("Generating %s from %s", format_path(helppath), format_path(readme))
+      from mkd2vimdoc import mkd2vimdoc
+      outfile = open(helppath, 'w')
+      parser = mkd2vimdoc()
+      outfile.write(parser.convert(self.read_file(readme), helpfile))
+      outfile.close()
+      # What do you mean this is an ugly hack? It works right? ;-) (this command actually took me several tries to get right)
+      exit_code = os.spawnlp(os.P_WAIT, 'sh', 'sh', '-c', 'vim -fc "helptags ~/.vim/doc | quit" >/dev/null 2>&1')
+      if exit_code != 0:
+        warning("Failed to update Vim's help tags: Vim exited with error %d!", exit_code)
+      return helpfile
+
+  def find_readme(self): # {{{1
+    value = self.get_option('readme')
+    if value: return canonicalize(value)
+
+  def upload_readme(self): # {{{1
+    readme = self.find_readme()
+    target = self.get_option('upload_readme')
+    if readme and target:
+      message("Uploading %s to %s", format_path(readme), target)
+      from tempfile import mktemp
+      tempname = mktemp()
+      handle = open(tempname, 'w')
+      handle.write(self.read_file(readme))
+      handle.close()
+      exit_code = os.spawnlp(os.P_WAIT, 'scp', 'scp', '-q', tempname, target)
+      if exit_code != 0:
+        warning("Failed to upload README: scp exited with error %d!", exit_code)
+
+  def print_deps(self, scripts): # {{{1
+    friendly_path = format_path(self.plugin_file)
+    if len(scripts) < 2:
+      print "Looks like the plug-in %s doesn't call any auto-load functions!" % friendly_path
+    else:
+      print "The plug-in %s depends on the following auto-load %s:" % (friendly_path, pluralize('script', len(scripts) - 1))
+      for scriptname, callees in scripts:
+        if scriptname != self.plugin_file:
+          print " - %s" % format_path(scriptname)
+      for scriptname, callees in scripts:
+        if callees != {}:
+          print "The auto-load %s called by %s:" % (pluralize('function', len(callees)), format_path(scriptname))
+          for fun in sorted(callees.keys()):
+            print ' - %s()' % fun
+
+  def install_plugin(self, scripts): # {{{1
+    files = {}
+    for scriptname, callees in scripts:
+      files[scriptname] = os.path.relpath(scriptname, VIM_PROFILE)
+    for abspath, relpath in self.expand_included_files().iteritems():
+      files[abspath] = relpath
+    helpfile = self.update_helpfile()
+    if helpfile:
+      helpfile = os.path.join('doc', helpfile)
+      files[os.path.join(VIM_PROFILE, helpfile)] = helpfile
+    target = os.getcwd()
+    for abspath, relpath in sorted(files.iteritems()):
+      symlink = os.path.join(target, relpath)
+      if os.path.islink(symlink):
+        os.unlink(symlink)
+      if os.path.exists(symlink):
+        warning("Refusing to overwrite %s!", format_path(symlink))
+      else:
+        message("Symlinking %s -> %s", format_path(symlink), format_path(abspath))
+        os.symlink(abspath, symlink)
+
+  def package_plugin(self, scripts): # {{{1
+
+    # Pick a filename for the ZIP archive and open it for writing.
+    version = self.find_version()
+    if version:
+      self.check_version(version)
+    archive_suffix = self.opts.package_beta and '-beta' or ''
+    if version:
+      archive_name = '%s-%s%s.zip' % (self.plugin_name, version, archive_suffix)
+    else:
+      archive_name = '%s%s.zip' % (self.plugin_name, archive_suffix)
+    message("Creating %s", archive_name)
+    from zipfile import ZipFile, ZIP_DEFLATED
+    archive = ZipFile(archive_name, 'w', ZIP_DEFLATED)
+
+    # Add a comment with the plug-in's name, version and release type.
+    comment = 'Vim plug-in ' + os.path.basename(self.plugin_file)
+    if self.opts.package_beta:
+      comment += ' beta'
+    if version:
+      comment += ' version ' + version
+    archive.comment = comment
+
+    # Make sure never to package the same file multiple times!
+    packaged_files = {}
+    def check_file(abspath, relpath):
+      realpath = os.path.realpath(abspath)
+      if realpath not in packaged_files:
+        if not self.check_excluded(abspath):
+          packaged_files[realpath] = True
+          if self.opts.verbose:
+            message("Adding %s to %s as `%s'", format_path(abspath), archive_name, relpath)
+          return True
+
+    # Process explicitly included files (optionally renamed inside ZIP).
+    for abspath, relpath in self.expand_included_files().iteritems():
+      if check_file(abspath, relpath):
+        archive.writestr(relpath, self.read_file(abspath))
+
+    # Include auto-load dependencies in ZIP archive?
+    for script, callees in scripts:
+      relpath = os.path.relpath(script, VIM_PROFILE)
+      if check_file(script, relpath):
+        archive.writestr(relpath, self.read_file(script))
+
+    # Include up-to-date help file in archive?
+    helpfile = self.update_helpfile()
+    if helpfile:
+      relpath = 'doc/' + helpfile
+      abspath = '%s/%s' % (VIM_PROFILE, relpath)
+      if check_file(abspath, relpath):
+        with open(abspath) as infile:
+          archive.writestr(relpath, infile.read())
+
+    archive.close()
+    if version:
+      self.save_version(version)
+    if not self.opts.package_beta:
+      self.upload_new_version()
+
+  def expand_included_files(self): # {{{1
+    included_files = {}
+    option_value = self.get_option('include_files')
+    if option_value:
+      repository = canonicalize(self.get_option('git_repository'))
+      for line in option_value.split('\n'):
+        source, target = line.split('->')
+        source = source.strip()
+        target = target.strip()
+        pattern = os.path.join(repository, source)
+        ignored_prefix = os.path.split(pattern)[0]
+        for abspath in glob.glob(pattern):
+          if not target.endswith('/'):
+            relpath = target
+          else:
+            # Replace the physical pathname prefix (as it appears on the local
+            # file system) with a virtual one (as it should appear when a user
+            # installs the plug-in, relative to their Vim profile directory).
+            relpath = os.path.join(target, os.path.split(abspath)[1])
+          included_files[abspath] = relpath
+    return included_files
+
+  def check_version(self, version): # {{{2
+    version_key = self.plugin_name + '_version'
+    prev_version = self.get_option(version_key, VERSIONS_SECTION)
+    if prev_version and prev_version == version and not self.opts.force:
+      warning("Please raise version number in %s!", format_path(self.plugin_file))
+      sys.exit(1)
+
+  def save_version(self, version): # {{{2
+    version_key = self.plugin_name + '_version'
+    if not self.opts.package_beta:
+      if not self.config.has_section(VERSIONS_SECTION):
+        self.config.add_section(VERSIONS_SECTION)
+      self.config.set(VERSIONS_SECTION, version_key, version)
+      with open(CONFIG_FILE, 'w') as handle:
+        self.config.write(handle)
+
+  def find_version(self): # {{{1
+    with open(self.plugin_file) as handle:
+      for line in handle:
+        m = re.match(r'^"\s+Version:\s*(\S+)', line)
+        if m: return m.group(1).strip()
+    warning("Failed to determine version of %s!", format_path(self.plugin_file))
+
+  def upload_new_version(self): # {{{1
+    with open(self.plugin_file) as handle:
+      for line in handle:
+        m = re.match(r'^\s*"\s*GetLatestVimScripts:\s*(\d+)', line)
+        if m:
+          url = 'http://www.vim.org/scripts/add_script_version.php?script_id'
+          template = 'gnome-open %s=%s 1>/dev/null 2>&1'
+          os.spawnlp(os.P_NOWAIT, 'sh', 'sh', '-c', template % (url, m.group(1)))
+
+  def read_file(self, filename): # {{{1
+    filename = canonicalize(filename)
+    if filename in self.cached_files:
+      return self.cached_files[filename]
+    repository = canonicalize(self.get_option('git_repository'))
+    output = ''
+    if (not self.opts.force) and (not self.opts.package_beta) and repository \
+        and os.path.isdir(repository) and filename.startswith(repository):
+      relpath = os.path.relpath(filename, repository)
+      if self.opts.verbose:
+        message("Extracting last commit of %s for analysis", format_path(filename))
+      from subprocess import Popen, PIPE
+      git = Popen(['git', 'cat-file', '-p', 'HEAD:' + relpath], cwd=repository, stdout=PIPE, stderr=PIPE)
+      output = git.communicate()[0]
+      if not output:
+        warning("Failed to extract last-committed version!")
+    if not output:
+      with open(filename) as handle:
+        output = handle.read()
+    if not output:
+      warning("Error: Failed to read %s! Exiting..", filename)
+      sys.exit(1)
+    elif output.endswith('.vim') and output.find('\r\n') >= 0:
+      warning("Warning: %s is in DOS file format while the UNIX format is recommended for Vim scripts!", filename)
+    self.cached_files[filename] = output
+    return output
+
+  def get_option(self, option, section=None):
+    section = section or self.plugin_name
+    if self.config.has_option(section, option):
+      return self.config.get(section, option)
+
+# Miscellaneous functions. {{{1
+
+def canonicalize(filename):
+  if filename:
+    filename = os.path.expanduser(filename)
+    filename = os.path.abspath(filename)
+    return os.path.realpath(filename)
+
+def message(msg, *args):
+  sys.stderr.write((msg + '\n') % args)
+
+def warning(msg, *args):
+  template = '\x1b[0;31m%s\x1b[0m\n'
+  sys.stderr.write(template % (msg % args))
+
+def format_path(path):
+  if path.startswith(HOME_DIR):
+    path = '~' + path[len(HOME_DIR):]
+  return path
+
+def pluralize(word, count):
+  if count == 1:
+    return word
+  else:
+    return word + 's'
+
+# }}}1
+
+if __name__ == '__main__':
+  instance = VimPluginTool()
+  instance.run(sys.argv[1:])
+
+# vim: ts=2 sw=2 et
