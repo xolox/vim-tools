@@ -4,7 +4,7 @@
 Convert Markdown formatted text to Vim's help file format.
 
 Author: Peter Odding <peter@peterodding.com>
-Last Change: March 16, 2011
+Last Change: March 19, 2011
 Homepage: http://github.com/xolox/vim-tools
 License: MIT
 
@@ -28,7 +28,8 @@ class mkd2vimdoc:
   # Regexen to match various kinds of text that occur in Markdown documents.
   html_regex = re.compile(r'<([^>]+)>')
   indent_regex = re.compile(r'^(\s*)\S')
-  reference_definition_regex = re.compile(r'\n\[(\w+)\]:\s+([^\n]+)')
+  reference_definition_regex = re.compile(r'\n\s*\[(\w+)\]:\s+([^\n]+)')
+  reference_definition_regex = re.compile(r'\n\s*\[([A-Za-z0-9_-]+)\]:\s+([^\n]+)')
   linkref_regex = re.compile(r"""
     \[ ( (?: [^\]\\] | \\. )+ ) \]   # link text.
     \s*                              # optional whitespace.
@@ -53,9 +54,11 @@ class mkd2vimdoc:
     self.convert_heading(output, blocks.pop(0), header_tags, helpfile)
     for i, block in enumerate(blocks):
       if block != '' and not block.isspace():
+        #sys.stderr.write("\rConverting block %i .." % i)
         if not (self.convert_heading(output, block, header_tags) or self.convert_codeblock(output, block)):
           output.append('')
           self.convert_block(output, block, tags)
+        #sys.stderr.write(output[len(output)-1])
     if self.numbered_refs:
       output.append('\n%s\nReferences ~\n' % ('=' * self.TEXT_WIDTH))
       ordered = [(v, k) for k, v in self.numbered_refs.iteritems()]
@@ -63,6 +66,7 @@ class mkd2vimdoc:
       for number, target in ordered:
         output.append('[%i] %s' % (number, target))
     output.append('\nvim: syntax=help nospell')
+    #sys.stderr.write("\n")
     return '\n'.join(output)
 
   def extract_named_references(self, m):
