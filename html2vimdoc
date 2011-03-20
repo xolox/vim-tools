@@ -41,16 +41,19 @@ Valid options:
 
 """
 
-import re
-import os
-import sys
+# Standard library modules.
 import getopt
-import textwrap
-import urllib
+import os
+import re
+import sys
+from textwrap import dedent
+from urllib import urlopen
+
+# Extra dependencies.
 from BeautifulSoup import BeautifulSoup, Comment
 
 def main():
-  filename, title, arguments = parse_args(sys.argv)
+  filename, title, arguments = parse_args(sys.argv[1:])
   filename, text = get_input(filename, arguments)
   html = markdown_to_html(text)
   title, firstlevel, tree = parse_html(html, title)
@@ -64,8 +67,12 @@ def main():
     if title:
       line.append(title)
     output.append('  '.join(line))
+  basename = os.path.splitext(filename)[0]
+  parts = basename.split('-')
+  if len(parts) == 2 and re.match(r'^\d+(\.\d+)*$', parts[1]):
+    basename = parts[0]
   for item in blocks:
-    print_block(item, output, firstlevel)
+    print_block(item, output, firstlevel, basename)
   output.append('vim: ft=help')
   print '\n\n'.join(output)
 
@@ -96,7 +103,7 @@ def get_input(filename, args):
     location = args[0]
     if not filename:
       filename = os.path.splitext(os.path.split(location)[1])[0] + '.txt'
-    handle = urllib.urlopen(location)
+    handle = urlopen(location)
     text = handle.read()
     handle.close()
   return filename, text
@@ -125,7 +132,7 @@ def parse_html(contents, title):
   headings = tree.findAll('h1')
   if headings:
     if not title:
-      title = compact_string(node_text(headings[0]))
+      title = compact(node_text(headings[0]))
       # Remove heading from parse tree.
       headings[0].extract()
   # Remove HTML comments from parse tree.
@@ -136,20 +143,30 @@ def parse_html(contents, title):
 def simplify_tree(node, output, para_id=0):
   name = getattr(node, 'name', None)
   if name == 'p':
+    # Update current paragraph identity.
     para_id = id(node)
   if name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+    # Matched a heading.
     output.append((name, node_text(node)))
   elif name == 'pre':
     text = node_text(node)
-    text = trim_leading_empty_lines(text.rstrip())
-    output.append((name, textwrap.dedent(text)))
+    text = trim_lines(text.rstrip())
+    output.append((name, dedent(text)))
+  elif name == 'table':
+    rows = []
+    for row in node.findAll('tr'):
+      columns = []
+      for column in row.findAll({ 'th': True, 'td': True }):
+        columns.append(compact(node_text(column)))
+      rows.append(columns)
+    output.append((name, rows))
   elif name in ('li', 'dt', 'dd'):
-    output.append((name, compact_string(node_text(node))))
+    output.append((name, compact(node_text(node))))
   elif not isinstance(node, unicode):
     for child in node:
       simplify_tree(child, output, para_id)
   else:
-    text = compact_string(node)
+    text = compact(node)
     if text:
       if output:
         lastitem = output[len(output) - 1]
@@ -160,30 +177,47 @@ def simplify_tree(node, output, para_id=0):
       output.append(('text', para_id, node))
   return output
 
-def print_block(item, output, level):
+def print_block(item, output, level, filename):
   # Headings.
   if item[0] == 'h1':
-    print_heading(item[1], output, '=')
+    print_heading(item[1], output, '=', filename)
   elif item[0] == 'h2':
-    print_heading(item[1], output, level == 2 and '=' or '-')
+    print_heading(item[1], output, level == 2 and '=' or '-', filename)
   elif item[0] in ('h3', 'h4', 'h5', 'h6'):
-    print_heading(item[1], output, '-')
+    print_heading(item[1], output, '-', filename)
   elif item[0] == 'pre':
     # Join the previous and current block because the '>' marker is hidden
     # and can visually be considered an empty line.
     prevblock = output[len(output)-1].rstrip()
     thisblock = '    ' + item[1].replace('\n', '\n' + '    ')
     output[len(output)-1] = prevblock + '\n>\n' + thisblock
+  elif item[0] == 'table':
+    widths = {}
+    for row in item[1]:
+      for colnr, column in enumerate(row):
+        widths[colnr] = max(widths.get(colnr, 0), len(column))
+    lines = []
+    for rownr, columns in enumerate(item[1]):
+      line = []
+      for colnr, column in enumerate(columns):
+        line.append(column.ljust(widths[colnr]))
+      line = '  ' + '  '.join(line).rstrip()
+      if rownr == 0:
+        line += ' ~'
+      lines.append(line)
+    output.append('\n'.join(lines))
   else:
     text = item[item[0] == 'text' and 2 or 1]
-    text = trim_leading_empty_lines(text)
+    text = trim_lines(text)
     if item[0] in ('li', 'dt', 'dd'):
       text = ' - ' + text
-    text = wrap(text)
+    # Make the Lua reference manual more useful.
+    text = re.sub(u'\xa7(\\d+(\\.\\d+)*)', '|lua-\\1|', text)
+    text = wrap_text(text)
     output.append(text)
 
-def print_heading(text, output, marker):
-  heading = compact_string(text)
+def print_heading(text, output, marker, filename):
+  heading = compact(text)
   match = re.match(r'([A-Za-z0-9_]+([.:][A-Za-z0-9_]+)*)\s*\(', heading)
   if match:
     anchor = match.group(1) + '()'
@@ -191,15 +225,18 @@ def print_heading(text, output, marker):
     anchor = re.sub('[^a-z0-9_().]+', '-', heading.lower())
     anchor = re.sub('^the-', '', anchor)
     anchor = re.sub('-the-', '-', anchor)
+  filename = filename.lower()
+  if filename not in anchor:
+    anchor = filename + '-' + anchor
   output.append('\n'.join([
       marker * 79,
       '%080s' % ('*' + anchor.strip('-') + '*'),
       heading + ' ~' ]))
 
-def wrap(text, width=79):
+def wrap_text(text, width=79, startofline=''):
   """ Re-flow paragraph by adding hard line breaks. """
   lines = []
-  cline = ''
+  cline = startofline
   indent = re.match(r'^\s*', text).group(0)
   for word in text.split():
     wordlen = len(word.replace('|', ''))
@@ -213,7 +250,7 @@ def wrap(text, width=79):
       if cline.startswith('- ') or cline.startswith('   '):
         cline = '   ' + word
       else:
-        cline = word
+        cline = startofline + word
   if len(cline) > 0:
     lines.append(cline)
   return indent + '\n'.join(lines)
@@ -223,11 +260,11 @@ def node_text(node):
   text = text.replace(u'\u2192', '->')
   return text
 
-def compact_string(s):
-  return ' '.join(s.split())
-
-def trim_leading_empty_lines(s):
+def trim_lines(s):
   return re.sub('^([ \t]*\n)+', '', s)
+
+def compact(s):
+  return ' '.join(s.split())
 
 if __name__ == '__main__':
   import codecs
