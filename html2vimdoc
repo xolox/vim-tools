@@ -1,0 +1,238 @@
+#!/usr/bin/env python
+
+"""
+Convert HTML documents to Vim help files.
+
+Author: Peter Odding <peter@peterodding.com>
+Last Change: March 20, 2011
+Homepage: http://github.com/xolox/vim-tools
+License: MIT
+
+The Python script "html2vimdoc" converts HTML documents to Vim's plain text
+help file format. Help tags are generated so that you can quickly jump to any
+section of the generated documentation. The Beautiful Soup HTML parser is used
+so that even malformed HTML can be converted. When given Markdown input it
+will be automatically converted to HTML using the Python markdown module.
+
+On Debian/Ubuntu you can install the Python modules that are used in this
+script by executing the following command in a terminal:
+
+  sudo apt-get install python-beautifulsoup python-markdown
+
+To-do list:
+ - Refactor code to be more logical
+ - Automatic hyper links in paragraphs
+ - Compact small lists, expand large ones
+"""
+
+usage = """
+html2vimdoc [OPTIONS] [LOCATION]
+
+Convert HTML documents to Vim help files. When LOCATION is
+given it is assumed to be the filename or URL of the input,
+otherwise the script reads from standard input. The
+generated Vim help file is written to standard output.
+
+Valid options:
+
+  -h  show this message and exit
+  -f  name of the generated help file (embedded in
+      the Vim help file as the first defined tag)
+
+"""
+
+import re
+import os
+import sys
+import getopt
+import textwrap
+import urllib
+from BeautifulSoup import BeautifulSoup, Comment
+
+def main():
+  filename, title, arguments = parse_args(sys.argv)
+  filename, text = get_input(filename, arguments)
+  html = markdown_to_html(text)
+  title, firstlevel, tree = parse_html(html, title)
+  blocks = simplify_tree(tree, [])
+  # Output help file name and title.
+  output = []
+  if filename or title:
+    line = []
+    if filename:
+      line.append('*' + filename + '*')
+    if title:
+      line.append(title)
+    output.append('  '.join(line))
+  for item in blocks:
+    print_block(item, output, firstlevel)
+  output.append('vim: ft=help')
+  print '\n\n'.join(output)
+
+def parse_args(argv):
+  """ Parse command line arguments given to html2vimdoc. """
+  filename, title = '', ''
+  try:
+    options, arguments = getopt.getopt(argv, 'hf:t:')
+  except getopt.GetoptError, err:
+    print str(err)
+    print usage
+    sys.exit(1)
+  for option, value in options:
+    if option == '-f':
+      filename = value
+    if option == '-t':
+      title = value
+    elif option == '-h':
+      print usage
+      sys.exit(0)
+  return filename, title, arguments
+
+def get_input(filename, args):
+  """ Get text to be converted to Vim's help file format. """
+  if not args:
+    text = sys.stdin.read()
+  else:
+    location = args[0]
+    if not filename:
+      filename = os.path.splitext(os.path.split(location)[1])[0] + '.txt'
+    handle = urllib.urlopen(location)
+    text = handle.read()
+    handle.close()
+  return filename, text
+
+def markdown_to_html(text):
+  """ When input looks like Markdown, convert to HTML so we can parse that. """
+  if text.startswith('#'):
+    try:
+      # Workaround for "UnicodeDecodeError: Markdown only accepts Unicode or ASCII input".
+      text = text.decode('utf-8')
+    except:
+      pass
+    from markdown import markdown
+    text = markdown(text)
+  return text
+
+def parse_html(contents, title):
+  """ Parse HTML input using Beautiful Soup parser. """
+  tree = BeautifulSoup(contents, convertEntities = BeautifulSoup.ALL_ENTITIES)
+  # Ignore all text outside <body>.
+  try:
+    tree = tree.html.body
+  except:
+    pass # don't break when html.body doesn't exist.
+  # Count top level headings, find help file title.
+  headings = tree.findAll('h1')
+  if headings:
+    if not title:
+      title = compact_string(node_text(headings[0]))
+      # Remove heading from parse tree.
+      headings[0].extract()
+  # Remove HTML comments from parse tree.
+  [c.extract() for c in tree.findAll(text = lambda n: isinstance(n, Comment))]
+  # Simplify parse tree into list of headings/paragraphs/blocks.
+  return title, len(headings) == 1 and 2 or 1, tree
+
+def simplify_tree(node, output, para_id=0):
+  name = getattr(node, 'name', None)
+  if name == 'p':
+    para_id = id(node)
+  if name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+    output.append((name, node_text(node)))
+  elif name == 'pre':
+    text = node_text(node)
+    text = trim_leading_empty_lines(text.rstrip())
+    output.append((name, textwrap.dedent(text)))
+  elif name in ('li', 'dt', 'dd'):
+    output.append((name, compact_string(node_text(node))))
+  elif not isinstance(node, unicode):
+    for child in node:
+      simplify_tree(child, output, para_id)
+  else:
+    text = compact_string(node)
+    if text:
+      if output:
+        lastitem = output[len(output) - 1]
+        if lastitem[1] == para_id:
+          newitem = ('text', para_id, lastitem[2] + node)
+          output[len(output) - 1] = newitem
+          return output
+      output.append(('text', para_id, node))
+  return output
+
+def print_block(item, output, level):
+  # Headings.
+  if item[0] == 'h1':
+    print_heading(item[1], output, '=')
+  elif item[0] == 'h2':
+    print_heading(item[1], output, level == 2 and '=' or '-')
+  elif item[0] in ('h3', 'h4', 'h5', 'h6'):
+    print_heading(item[1], output, '-')
+  elif item[0] == 'pre':
+    # Join the previous and current block because the '>' marker is hidden
+    # and can visually be considered an empty line.
+    prevblock = output[len(output)-1].rstrip()
+    thisblock = '    ' + item[1].replace('\n', '\n' + '    ')
+    output[len(output)-1] = prevblock + '\n>\n' + thisblock
+  else:
+    text = item[item[0] == 'text' and 2 or 1]
+    text = trim_leading_empty_lines(text)
+    if item[0] in ('li', 'dt', 'dd'):
+      text = ' - ' + text
+    text = wrap(text)
+    output.append(text)
+
+def print_heading(text, output, marker):
+  heading = compact_string(text)
+  match = re.match(r'([A-Za-z0-9_]+([.:][A-Za-z0-9_]+)*)\s*\(', heading)
+  if match:
+    anchor = match.group(1) + '()'
+  else:
+    anchor = re.sub('[^a-z0-9_().]+', '-', heading.lower())
+    anchor = re.sub('^the-', '', anchor)
+    anchor = re.sub('-the-', '-', anchor)
+  output.append('\n'.join([
+      marker * 79,
+      '%080s' % ('*' + anchor.strip('-') + '*'),
+      heading + ' ~' ]))
+
+def wrap(text, width=79):
+  """ Re-flow paragraph by adding hard line breaks. """
+  lines = []
+  cline = ''
+  indent = re.match(r'^\s*', text).group(0)
+  for word in text.split():
+    wordlen = len(word.replace('|', ''))
+    test = len(cline.replace('|', '')) + wordlen + 1
+    if test <= width or wordlen >= width / 3 and len(cline) < (width / 0.8) and test < (width * 1.2):
+      delimiter = re.match('[.?!]$', cline) != None and word[0].isupper() and '  ' or ' '
+      cline = len(cline) != 0 and (cline + delimiter + word) or word
+    else:
+      lines.append(cline)
+      # Indent continuation lines of wrapped list items.
+      if cline.startswith('- ') or cline.startswith('   '):
+        cline = '   ' + word
+      else:
+        cline = word
+  if len(cline) > 0:
+    lines.append(cline)
+  return indent + '\n'.join(lines)
+
+def node_text(node):
+  text = ''.join(node.findAll(text = True))
+  text = text.replace(u'\u2192', '->')
+  return text
+
+def compact_string(s):
+  return ' '.join(s.split())
+
+def trim_leading_empty_lines(s):
+  return re.sub('^([ \t]*\n)+', '', s)
+
+if __name__ == '__main__':
+  import codecs
+  streamWriter = codecs.lookup('utf-8')[-1]
+  sys.stdout = streamWriter(sys.stdout)
+  main()
+
+# vim: ts=2 sw=2 et
