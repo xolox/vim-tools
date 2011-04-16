@@ -4,15 +4,16 @@
 Convert HTML documents to Vim help files.
 
 Author: Peter Odding <peter@peterodding.com>
-Last Change: March 20, 2011
+Last Change: April 16, 2011
 Homepage: http://github.com/xolox/vim-tools
 License: MIT
 
 The Python script "html2vimdoc" converts HTML documents to Vim's plain text
-help file format. Help tags are generated so that you can quickly jump to any
-section of the generated documentation. The Beautiful Soup HTML parser is used
-so that even malformed HTML can be converted. When given Markdown input it
-will be automatically converted to HTML using the Python markdown module.
+help file format. Help tags are generated for headings so that you can quickly
+jump to any section of the generated documentation. The Beautiful Soup HTML
+parser is used so that even malformed HTML can be converted. When given
+Markdown input it will be automatically converted to HTML using the Python
+Markdown module.
 
 On Debian/Ubuntu you can install the Python modules that are used in this
 script by executing the following command in a terminal:
@@ -35,10 +36,10 @@ generated Vim help file is written to standard output.
 
 Valid options:
 
-  -h  show this message and exit
-  -f  name of the generated help file (embedded in
-      the Vim help file as the first defined tag)
-
+  -h, --help       show this message and exit
+  -f, --file=NAME  name of generated help file (embedded
+                   in Vim help file as first defined tag)
+  -t, --title=STR  title of the generated help file
 """
 
 # Standard library modules.
@@ -50,15 +51,18 @@ from textwrap import dedent
 from urllib import urlopen
 
 # Extra dependencies.
-from BeautifulSoup import BeautifulSoup, Comment
+from BeautifulSoup import BeautifulSoup, NavigableString, Comment
 
 def main():
   filename, title, arguments = parse_args(sys.argv[1:])
   filename, text = get_input(filename, arguments)
   html = markdown_to_html(text)
-  title, firstlevel, tree = parse_html(html, title)
+  print html2vimdoc(html, filename=filename, title=title)
+
+def html2vimdoc(html, filename='', title=''):
+  """ This function performs the conversion from HTML to Vim help file. """
+  title, firstlevel, tree, refs = parse_html(html, title)
   blocks = simplify_tree(tree, [])
-  # Output help file name and title.
   output = []
   if filename or title:
     line = []
@@ -73,6 +77,13 @@ def main():
     basename = parts[0]
   for item in blocks:
     print_block(item, output, firstlevel, basename)
+  if refs:
+    print_heading('References', output, '=', basename)
+    refs = [(refnum, url) for url, refnum in refs.iteritems()]
+    lines = []
+    for refnum, url in sorted(refs):
+      lines.append('[%i] %s' % (refnum, url))
+    output.append('\n'.join(lines))
   output.append('vim: ft=help')
   print '\n\n'.join(output)
 
@@ -86,17 +97,17 @@ def parse_args(argv):
     print usage
     sys.exit(1)
   for option, value in options:
-    if option == '-f':
+    if option in ('-f', '--file'):
       filename = value
-    if option == '-t':
+    elif option in ('-t', '--title'):
       title = value
-    elif option == '-h':
+    elif option in ('-h', '--help'):
       print usage
       sys.exit(0)
   return filename, title, arguments
 
 def get_input(filename, args):
-  """ Get text to be converted to Vim's help file format. """
+  """ Get text to be converted from standard input, path name or URL. """
   if not args:
     text = sys.stdin.read()
   else:
@@ -123,24 +134,40 @@ def markdown_to_html(text):
 def parse_html(contents, title):
   """ Parse HTML input using Beautiful Soup parser. """
   tree = BeautifulSoup(contents, convertEntities = BeautifulSoup.ALL_ENTITIES)
-  # Ignore all text outside <body>.
-  try:
-    tree = tree.html.body
-  except:
-    pass # don't break when html.body doesn't exist.
+  # Restrict conversion to content text.
+  root = tree.find(id = 'content')
+  if not root:
+    try:
+      root = tree.html.body
+    except:
+      # Don't break when html.body doesn't exist.
+      root = tree
   # Count top level headings, find help file title.
-  headings = tree.findAll('h1')
+  headings = root.findAll('h1')
   if headings:
     if not title:
       title = compact(node_text(headings[0]))
       # Remove heading from parse tree.
       headings[0].extract()
   # Remove HTML comments from parse tree.
-  [c.extract() for c in tree.findAll(text = lambda n: isinstance(n, Comment))]
+  [c.extract() for c in root.findAll(text = lambda n: isinstance(n, Comment))]
+  # Transform hyper links into textual references.
+  refs = {}
+  if True:
+    for node in root.findAll('a', href=True):
+      href = ''
+      print node
+      if href in refs:
+        refnum = refs[href]
+      else:
+        refnum = len(refs) + 1
+        refs[href] = refnum # NavigableString
+      node.insert(len(node), u' [%i]' % refnum)
   # Simplify parse tree into list of headings/paragraphs/blocks.
-  return title, len(headings) == 1 and 2 or 1, tree
+  return title, len(headings) == 1 and 2 or 1, root, refs
 
 def simplify_tree(node, output, para_id=0):
+  """ Convert the parse tree generated by Beautiful Soup into a list of block elements. """
   name = getattr(node, 'name', None)
   if name == 'p':
     # Update current paragraph identity.
@@ -178,6 +205,7 @@ def simplify_tree(node, output, para_id=0):
   return output
 
 def print_block(item, output, level, filename):
+  """ Convert a single block to the Vim help file format. """
   # Headings.
   if item[0] == 'h1':
     print_heading(item[1], output, '=', filename)
@@ -192,20 +220,7 @@ def print_block(item, output, level, filename):
     thisblock = '    ' + item[1].replace('\n', '\n' + '    ')
     output[len(output)-1] = prevblock + '\n>\n' + thisblock
   elif item[0] == 'table':
-    widths = {}
-    for row in item[1]:
-      for colnr, column in enumerate(row):
-        widths[colnr] = max(widths.get(colnr, 0), len(column))
-    lines = []
-    for rownr, columns in enumerate(item[1]):
-      line = []
-      for colnr, column in enumerate(columns):
-        line.append(column.ljust(widths[colnr]))
-      line = '  ' + '  '.join(line).rstrip()
-      if rownr == 0:
-        line += ' ~'
-      lines.append(line)
-    output.append('\n'.join(lines))
+    output.append(wrap_table(item[1]))
   else:
     text = item[item[0] == 'text' and 2 or 1]
     text = trim_lines(text)
@@ -217,6 +232,7 @@ def print_block(item, output, level, filename):
     output.append(text)
 
 def print_heading(text, output, marker, filename):
+  """ Convert a heading (of any level) to the Vim help file format. """
   heading = compact(text)
   match = re.match(r'([A-Za-z0-9_]+([.:][A-Za-z0-9_]+)*)\s*\(', heading)
   if match:
@@ -255,15 +271,70 @@ def wrap_text(text, width=79, startofline=''):
     lines.append(cline)
   return indent + '\n'.join(lines)
 
+def wrap_table(rows, width=79, padding='  '):
+  """ Generate ASCII table with wrapped columns. """
+  numcols = len(rows[0])
+  widths = [0] * numcols
+  padwidth = numcols * len(padding)
+  for columns in rows:
+    for colnum, text in enumerate(columns):
+      widths[colnum] = max(widths[colnum], len(text))
+  remaining_width = width - padwidth
+  remaining_columns = numcols
+  if sum(widths) + padwidth > width:
+    for colnum, colwidth in enumerate(widths):
+      widths[colnum] = min(colwidth, remaining_width / remaining_columns)
+      remaining_width -= widths[colnum]
+      remaining_columns -= 1
+    # TODO This can be improved
+    #widths = [width / numcols] * numcols
+  output = []
+  for row in rows:
+    columns = []
+    # Wrap individual columns.
+    for colnum, text in enumerate(row):
+      # Wrap text in column.
+      lines = []
+      line = ''
+      for word in text.split():
+        if len(line) + len(word) <= widths[colnum]:
+          line += (line and ' ' or '') + word
+        else:
+          lines.append(line)
+          line = word
+      if line:
+        lines.append(line)
+      # Left justify, pad columns with spaces.
+      for i, line in enumerate(lines):
+        lines[i] = line.ljust(widths[colnum])
+      columns.append(lines)
+    # Combine wrapped columns.
+    i = 0
+    while i < max(len(column) for column in columns):
+      line = []
+      for colnum, column in enumerate(columns):
+        if i < len(column):
+          line.append(column[i])
+        else:
+          line.append(' ' * widths[colnum])
+      output.append('  ' + '  '.join(line))
+      i += 1
+  output = [line.rstrip() for line in output]
+  output[0] += ' ~'
+  return '\n'.join(output)
+
 def node_text(node):
+  """ Get all text contained by the given parse tree node. """
   text = ''.join(node.findAll(text = True))
   text = text.replace(u'\u2192', '->')
   return text
 
 def trim_lines(s):
+  """ Trim empty, leading lines from the given string. """
   return re.sub('^([ \t]*\n)+', '', s)
 
 def compact(s):
+  """ Compact sequences of whitespace into single spaces. """
   return ' '.join(s.split())
 
 if __name__ == '__main__':
