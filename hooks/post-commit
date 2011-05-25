@@ -1,0 +1,18 @@
+#!/bin/sh
+
+# This git post-commit hook automatically tags new versions of my Vim plug-ins.
+# I always forget to define new tags but tags can be really handy for all sorts
+# of things, so I decided to automate the creation of new tags:
+
+PLUGIN_FILE=`echo plugin/*.vim`
+PLUGIN_VERSION=`grep Version $PLUGIN_FILE | cut '-d ' -f3`
+
+if [ -n "$PLUGIN_VERSION" ]; then
+  if [ -z "`git tag -l $PLUGIN_VERSION`" ]; then
+    git tag $PLUGIN_VERSION
+    # It's very tempting to add "git push && git push --tags" here because I
+    # still forget to push new tags to GitHub but so far I have refrained from
+    # doing this because it would instantly publish every mistake I make to
+    # GitHub :-P (and I make a lot of mistakes ;-)
+  fi
+fi
