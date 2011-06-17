@@ -303,6 +303,7 @@ def print_heading(text, output, tags, marker, filename):
     tags.append(anchor)
   else:
     # We didn't find a unique anchor, make something up ;-)
+    anchor = ''
     if len(text.split()) < 6:
       anchor = re.sub('[^a-z0-9_().:]+', '-', heading.lower())
       anchor = re.sub('^the-', '', anchor)
