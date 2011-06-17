@@ -90,6 +90,7 @@ def html2vimdoc(html, filename='', title='', url=''):
   output.append('vim: ft=help')
   text = '\n\n'.join(output)
   for tag in tags:
+    # FIXME |links| don't work in headings
     pattern = "([^|])'(%s)'([^|])" % tag
     text = re.sub(pattern, r'\1|\2|\3', text)
   return text
@@ -190,9 +191,12 @@ def parse_html(contents, title, url):
       refs[node['src']] = img_refnum
       node.insert(len(node), u'    %s, see reference [%i]' % (node['alt'] or 'Image', img_refnum))
     else:
-      link_target = node['href']
+      try:
+        link_target = node['href']
+      except:
+        # Ignore <a> without href="".
+        continue
       link_text = node_text(node)
-      # XXX print >>sys.stderr, link_target
       # Try to transform relative into absolute links.
       if url and not re.match(r'^\w+:', link_target):
         link_target = os.path.join(url, link_target)
@@ -284,7 +288,7 @@ def print_block(item, output, tags, level, filename):
     text = trim_lines(text)
     if item[0] in ('li', 'dt', 'dd'):
       text = ' - ' + text
-    # Make the Lua reference manual more useful.
+    # Make Lua manual more useful by making paragraph numbers help tags.
     text = re.sub(u'\xa7(\\d+(\\.\\d+)*)', '|lua-\\1|', text)
     text = wrap_text(text)
     output.append(text)
