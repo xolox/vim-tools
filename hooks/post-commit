@@ -4,7 +4,14 @@
 # I always forget to define new tags but tags can be really handy for all sorts
 # of things, so I decided to automate the creation of new tags:
 
-PLUGIN_FILE=`echo plugin/*.vim`
+if [ -f plugin/*.vim ]; then
+  PLUGIN_FILE=`echo plugin/*.vim`
+elif [ -f ftplugin/*.vim ]; then
+  PLUGIN_FILE=`echo ftplugin/*.vim`
+else
+  exit 0
+fi
+
 PLUGIN_VERSION=`grep Version $PLUGIN_FILE | cut '-d ' -f3`
 
 if [ -n "$PLUGIN_VERSION" ]; then

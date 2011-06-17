@@ -3,7 +3,14 @@
 # This git pre-commit hook automatically updates the documentation of my Vim
 # plug-ins by generating the Vim help file from the Markdown README file.
 
-PLUGIN_FILE=`echo plugin/*.vim`
+if [ -f plugin/*.vim ]; then
+  PLUGIN_FILE=`echo plugin/*.vim`
+elif [ -f ftplugin/*.vim ]; then
+  PLUGIN_FILE=`echo ftplugin/*.vim`
+else
+  exit 0
+fi
+
 PLUGIN_NAME=`basename $PLUGIN_FILE .vim`
 
 html2vimdoc -f $PLUGIN_NAME.txt README.md > doc/$PLUGIN_NAME.txt
