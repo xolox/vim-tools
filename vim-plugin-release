@@ -1,0 +1,165 @@
+#!/usr/bin/env python
+# vim: set fileencoding=utf-8 :
+
+# TODO Automatically run tests (first have to write them!)
+
+# Required libraries (try "apt-get install python-mechanize").
+import ConfigParser
+import mechanize
+import netrc
+import os
+import re
+import StringIO
+import urllib
+
+def main():
+
+    # Read the configuration file with plug-in definitions.
+    config = ConfigParser.RawConfigParser()
+    config.read(os.path.expanduser('~/.vimplugins'))
+
+    # Find the name of the git repository on http://github.com.
+    remote_origin_url = os.popen('git config --get remote.origin.url').read().strip()
+    assert remote_origin_url, \
+            "Failed to determine current repository!"
+    repo_name = os.path.splitext(os.path.basename(remote_origin_url))[0]
+
+    # Get the script info based on the remote repository name.
+    assert config.has_section(repo_name), \
+            "Repository not in configuration file!"
+
+    # Find the last released version on http://www.vim.org.
+    vim_online_url = 'http://www.vim.org/scripts/script.php?script_id=%s' % config.get(repo_name, 'script-id')
+    print "Finding last released version on %s .." % vim_online_url,
+    vim_online_page = urllib.urlopen(vim_online_url).read()
+    released_versions = []
+    for html_row in re.findall('<tr>.+?</tr>', vim_online_page, re.DOTALL):
+        if 'download_script.php' in html_row:
+            version_string = re.search('<b>(\d+(?:\.\d+)+)</b>', html_row).group(1)
+            released_versions.append(map(int, version_string.split('.')))
+    assert released_versions, \
+            "Failed to determine previously released versions!"
+    released_versions.sort()
+    previous_release = '.'.join([str(d) for d in released_versions[-1]])
+    print previous_release
+
+    # Find the current version of the plug-in (embedded as
+    # a string in the auto load script of the plug-in).
+    print "Finding current version ..",
+    script_fname = config.get(repo_name, 'autoload-script')
+    autoload_path = re.sub(r'^autoload/(.+?)\.vim$', r'\1', script_fname)
+    version_defn = 'let g:%s#version' % autoload_path.replace('/', '#')
+    version_str = None
+    for line in open(script_fname):
+        if line.startswith(version_defn):
+            version_str = line.split("'")[1]
+            print version_str
+            break
+    assert version_str, \
+            "Failed to determine current version!"
+
+    if version_str == previous_release:
+        print "Up to date!"
+        return
+
+    zip_fname = config.get(repo_name, 'zip-file')
+
+    # Push any changes to the remote repository on GitHub.
+    print "Pushing change sets and tags to GitHub .."
+    assert os.system('git push origin master') == 0, \
+            "Failed to push changes to GitHub!"
+    assert os.system('git push --tags') == 0, \
+            "Failed to push tags to GitHub!"
+
+    # Create a ZIP archive containing the latest release.
+    print "Generating ZIP archive from HEAD .."
+    assert os.system('git archive -o "%s" HEAD' % zip_fname) == 0, \
+            "Failed to prepare ZIP archive!"
+
+    # Suggest change log using `git log' between previous/current tag.
+    print "Waiting for approval of change log .."
+    suggested_changelog = suggest_changelog(remote_origin_url, previous_release)
+    approved_changelog = approve_changelog(suggested_changelog)
+    if not approved_changelog:
+        print "Empty change log, canceling release .."
+        return
+
+    # Upload release (under username & password defined in ~/.netrc).
+    print "Uploading release to Vim Online .."
+    user_netrc = netrc.netrc(os.path.expanduser('~/.netrc'))
+    username, _, password = user_netrc.hosts['www.vim.org']
+    script_id = int(config.get(repo_name, 'script-id'))
+    zip_handle = open(zip_fname)
+    upload_release(script_id, username, password, version_str, approved_changelog, zip_fname, zip_handle)
+    zip_handle.close()
+    os.unlink(zip_fname)
+
+    # Open a web browser to check the results.
+    assert os.system('gnome-open "http://www.vim.org/scripts/script.php?script_id=%d"' % script_id) == 0, \
+            "Failed to open script page on Vim Online!"
+
+    # Run a script after publishing the latest release? In my case this script
+    # updates the link to the latest ZIP archive on peterodding.com.
+    after_hook = os.path.expanduser('~/bin/after-vim-plugin-release')
+    if os.path.exists(after_hook) and os.access(after_hook, os.X_OK):
+        assert os.system(after_hook) == 0, \
+            "Failed to run `after-vim-plugin-release' script!"
+
+    # We're done :-)
+    print "Done!"
+
+def suggest_changelog(remote_origin_url, previous_release):
+    # Find the current and previous tags.
+    git_tags = os.popen('git tag | sort -Vr | head -n2', 'r')
+    current_tag = git_tags.readline().strip()
+    previous_tag = previous_release or git_tags.readline().strip()
+    range = previous_tag + '..' + current_tag
+    # Find changes between current and previous tags.
+    changelog = ''
+    repo_url = find_repo_url(remote_origin_url)
+    for line in reversed(list(os.popen('git log --pretty=oneline --abbrev-commit ' + range, 'r'))):
+        commit_hash, commit_desc = line.split(None, 1)
+        changelog += ' \x95 %s:\n' % commit_desc.strip()
+        changelog += '   %s/commit/%s\n\n' % (repo_url, commit_hash)
+    return changelog.rstrip()
+
+def find_repo_url(remote_origin_url):
+    prefix, location = remote_origin_url.split(':')
+    assert prefix == 'git@github.com' and location.endswith('.git'), \
+            "Failed to find GitHub repository location in git configuration!"
+    return 'http://github.com/' + location[:-4]
+
+def approve_changelog(suggested_changelog):
+    fname = '/tmp/vim-online-changelog'
+    handle = open(fname, 'w')
+    handle.write(suggested_changelog)
+    handle.close()
+    assert os.system('gvim -fc "e ++enc=cp1252 %s"' % fname) == 0, \
+            "Failed to approve change log?!"
+    handle = open(fname)
+    approved_changelog = handle.read()
+    handle.close()
+    os.unlink(fname)
+    return approved_changelog.rstrip()
+
+def upload_release(script_id, username, password, version, changelog, zip_fname, zip_handle):
+    # Open a session to Vim Online.
+    session = mechanize.Browser()
+    session.open("http://www.vim.org/scripts/add_script_version.php?script_id=%i" % script_id)
+    # Fill in the login form.
+    session.select_form('login')
+    session['userName'] = username
+    session['password'] = password
+    session.submit()
+    # Fill in the upload form.
+    session.select_form('script')
+    session['vim_version'] = ['7.0']
+    session['script_version'] = version
+    session['version_comment'] = changelog
+    session.form.add_file(zip_handle, 'application/zip', zip_fname, 'script_file')
+    session.submit()
+
+if __name__ == '__main__':
+    main()
+
+# vim: ts=4 sw=4 et

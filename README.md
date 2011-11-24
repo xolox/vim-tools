@@ -2,9 +2,9 @@
 
 I'm a programmer which naturally means I hate performing repetitive tasks... Publishing [my Vim plug-ins] [homepage] quickly turned out to fall in this category; I'd keep making the same mistakes and having users e-mail me because I screwed up again and uploaded a broken release to [www.vim.org] [vim_online]. After a while this got embarrassing so I decided to solve this annoying problem once and for all. This git repository contains the results in the form of two Python scripts:
 
-## vim-plugin-tool
+## vim-plugin-release
 
-This program makes it easier for me to publish my Vim plug-ins including their auto-load script dependencies. This is what I use to publish my plug-ins on <http://www.vim.org>. It might be a bit specific to my workflow but you never know, someone might find it useful :-)
+This program makes it easier for me to publish my Vim plug-ins on GitHub and Vim Online. This is what I use to publish my plug-ins on <http://www.vim.org>. It might be a bit specific to my workflow but you never know, someone might find it useful :-)
 
 ## mkd2vimdoc.py
 

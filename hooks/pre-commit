@@ -1,17 +1,26 @@
-#!/bin/sh
+#!/bin/bash
 
 # This git pre-commit hook automatically updates the documentation of my Vim
-# plug-ins by generating the Vim help file from the Markdown README file.
+# plug-ins by generating the Vim help file from the Markdown README file using
+# my `html2vimdoc.py' script (presumed to be installed in the user's $PATH).
 
-if [ -f plugin/*.vim ]; then
-  PLUGIN_FILE=`echo plugin/*.vim`
-elif [ -f ftplugin/*.vim ]; then
-  PLUGIN_FILE=`echo ftplugin/*.vim`
-else
-  exit 0
+REMOTE_REPO=$(git config --get remote.origin.url)
+REPO_NAME=$(basename $REMOTE_REPO .git)
+
+case $REPO_NAME in
+  vim-easytags)        VIM_HELP_FILE=easytags.txt   ;;
+  vim-lua-ftplugin)    VIM_HELP_FILE=ft_lua.txt     ;;
+  vim-lua-inspect)     VIM_HELP_FILE=luainspect.txt ;;
+  vim-notes)           VIM_HELP_FILE=notes.txt      ;;
+  vim-publish)         VIM_HELP_FILE=publish.txt    ;;
+  vim-pyref)           VIM_HELP_FILE=pyref.txt      ;;
+  vim-python-ftplugin) VIM_HELP_FILE=ft_python.txt  ;;
+  vim-reload)          VIM_HELP_FILE=reload.txt     ;;
+  vim-session)         VIM_HELP_FILE=session.txt    ;;
+  vim-shell)           VIM_HELP_FILE=shell.txt      ;;
+esac
+
+if [ -n "$VIM_HELP_FILE" ]; then
+  html2vimdoc -f $VIM_HELP_FILE README.md > doc/$VIM_HELP_FILE
+  git add doc/$VIM_HELP_FILE
 fi
-
-PLUGIN_NAME=`basename $PLUGIN_FILE .vim`
-
-html2vimdoc -f $PLUGIN_NAME.txt README.md > doc/$PLUGIN_NAME.txt
-git add doc/$PLUGIN_NAME.txt
