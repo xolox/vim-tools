@@ -4,7 +4,7 @@
 Convert HTML documents to Vim help files.
 
 Author: Peter Odding <peter@peterodding.com>
-Last Change: June 17, 2011
+Last Change: January 15, 2012
 Homepage: http://github.com/xolox/vim-tools
 License: MIT
 
@@ -78,6 +78,33 @@ def html2vimdoc(html, filename='', title='', url=''):
   if len(parts) == 2 and re.match(r'^\d+(\.\d+)*$', parts[1]):
     basename = parts[0]
   tags = []
+
+  # Write a table of contents.
+  print_heading('Contents', output, tags, '=', basename)
+  lastlevel = 0
+  counters = []
+  toc = []
+  for item in [('h2', 'Introduction')] + blocks:
+    if item[0] in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+      level = int(item[0][1])
+      text = compact(item[1])
+      anchor = heading_to_anchor(basename, text)
+      if level > lastlevel:
+        counters.append(0)
+      elif level < lastlevel:
+        counters.pop()
+      counters[-1] += 1
+      entry = ' ' * (level - 1) + str(counters[-1]) + '. ' + text
+      if anchor and anchor in entry:
+        entry = replace_quoted(entry, anchor, '|%s|' % anchor)
+      elif anchor:
+        padding = max(1, 78 - len(entry) - len(anchor))
+        entry += ' ' * padding + '|' + anchor + '|'
+      toc.append(entry)
+      lastlevel = level
+  output.append('\n'.join(toc))
+
+  print_heading('Introduction', output, tags, '=', basename)
   for item in blocks:
     print_block(item, output, tags, firstlevel, basename)
   if refs:
@@ -177,11 +204,7 @@ def parse_html(contents, title, url):
   [n.extract() for n in root.findAll('span') if 'test coverage' in node_text(n)]
   # Transform <code> fragments into 'single quoted strings'.
   def quote(node):
-    text = node_text(node)
-    if text.startswith("'") and text.endswith("'"):
-      return text
-    else:
-      return "'%s'" % text
+    return "'%s'" % node_text(node).strip("'")
   [n.replaceWith(quote(n)) for n in root.findAll('code') if n.parent.name != 'pre']
   # Transform hyper links and images into textual references.
   refs = {}
@@ -295,37 +318,46 @@ def print_block(item, output, tags, level, filename):
 
 def print_heading(text, output, tags, marker, filename):
   """ Convert a heading (of any level) to the Vim help file format. """
+  lines = [marker * 79]
   heading = compact(text)
-  anchor = ''
-  # Try to find a unique anchor indicated in the source HTML with
-  # <code> and in the format we have here with 'single-quotes'.
-  m = re.search(r"'(\S+)'", text)
-  anchor = m and m.group(1)
-  if anchor and anchor not in tags:
-    heading = heading.replace("'%s'" % anchor, '*%s*' % anchor)
-    output.append(marker * 79 + '\n' + heading)
-    tags.append(anchor)
-  else:
-    # We didn't find a unique anchor, make something up ;-)
+  anchor = heading_to_anchor(filename, heading)
+  # Never create duplicate tags.
+  if anchor in tags:
     anchor = ''
-    if len(text.split()) < 6:
-      anchor = re.sub('[^a-z0-9_().:]+', '-', heading.lower())
-      anchor = re.sub('^the-', '', anchor)
-      anchor = re.sub('-the-', '-', anchor)
-      anchor = anchor.strip('-')
-      if filename:
-        filename = filename.lower()
-        if filename not in anchor:
-          anchor = filename + '-' + anchor
-      if anchor in tags:
-        # Never generate duplicate tags!
-        anchor = ''
-      else:
-        tags.append(anchor)
-    output.append(
-        marker * 79 + '\n'
-      + (('%080s\n' % ('*' + anchor + '*')) if anchor else '')
-      + heading + ' ~')
+  else:
+    tags.append(anchor)
+  if anchor and anchor in heading:
+    lines.append(replace_quoted(heading, anchor, '*%s*' % anchor))
+  else:
+    if anchor:
+      lines.append('%080s' % ('*' + anchor + '*'))
+    lines.append(heading + ' ~')
+  output.append('\n'.join(lines))
+
+def replace_quoted(text, find, replace):
+  quoted = "'%s'" % find
+  search = quoted if quoted in text else find
+  return text.replace(search, replace)
+
+def heading_to_anchor(basename, text):
+  """
+  Try to find a unique anchor indicated in the source HTML with
+  <code> and in the format we have here with 'single-quotes'.
+  """
+  m = re.search(r"'(\S+)'", text)
+  if m:
+    return m.group(1)
+  # We didn't find a unique anchor, make something up ;-)
+  if len(text.split()) < 6:
+    anchor = re.sub('[^a-z0-9_().:]+', '-', text.lower())
+    anchor = re.sub('^the-', '', anchor)
+    anchor = re.sub('-the-', '-', anchor)
+    anchor = anchor.strip('-')
+    if anchor and basename:
+      basename = basename.lower()
+      if basename not in anchor:
+          anchor = basename + '-' + anchor
+    return anchor
 
 def wrap_text(text, width=78, startofline=''):
   """ Re-flow paragraph by adding hard line breaks. """
