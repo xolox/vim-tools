@@ -11,6 +11,7 @@ import os
 import re
 import StringIO
 import urllib
+import webbrowser
 
 def main():
 
@@ -95,8 +96,7 @@ def main():
     os.unlink(zip_fname)
 
     # Open a web browser to check the results.
-    assert os.system('gnome-open "http://www.vim.org/scripts/script.php?script_id=%d"' % script_id) == 0, \
-            "Failed to open script page on Vim Online!"
+    webbrowser.open('http://www.vim.org/scripts/script.php?script_id=%d' % script_id)
 
     # Run a script after publishing the latest release? In my case this script
     # updates the link to the latest ZIP archive on peterodding.com.
