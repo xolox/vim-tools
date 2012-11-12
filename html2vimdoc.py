@@ -4,7 +4,7 @@
 Convert HTML documents to Vim help files.
 
 Author: Peter Odding <peter@peterodding.com>
-Last Change: January 15, 2012
+Last Change: November 12, 2012
 Homepage: http://github.com/xolox/vim-tools
 License: MIT
 
@@ -58,8 +58,7 @@ from BeautifulSoup import BeautifulSoup, Comment
 def main():
   filename, title, url, arguments = parse_args(sys.argv[1:])
   filename, url, text = get_input(filename, url, arguments)
-  html = markdown_to_html(text)
-  print html2vimdoc(html, filename=filename, title=title, url=url)
+  print html2vimdoc(text, filename=filename, title=title, url=url)
 
 def html2vimdoc(html, filename='', title='', url=''):
   """ This function performs the conversion from HTML to Vim help file. """
@@ -160,19 +159,20 @@ def get_input(filename, url, args):
     handle = urllib.urlopen(location)
     text = handle.read()
     handle.close()
+    if location.lower().endswith(('.md', '.mkd', '.mkdn', '.mdown', '.markdown')):
+      text = markdown_to_html(text)
   return filename, url, text
 
 def markdown_to_html(text):
-  """ When input looks like Markdown, convert to HTML so we can parse that. """
-  if text.startswith('#'):
-    try:
-      # Workaround for "UnicodeDecodeError: Markdown only accepts Unicode or ASCII input".
-      text = text.decode('utf-8')
-    except:
-      pass
-    from markdown import markdown
-    text = markdown(text)
-  return text
+  """ When the input is Markdown, convert it to HTML so we can parse that. """
+  try:
+    # The Python Markdown module only accepts Unicode and ASCII strings,
+    # but I save my Markdown documents in the UTF-8 encoding.
+    text = text.decode('utf-8')
+  except:
+    pass
+  from markdown import markdown
+  return markdown(text)
 
 def parse_html(contents, title, url):
   """ Parse HTML input using Beautiful Soup parser. """
