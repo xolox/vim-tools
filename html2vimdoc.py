@@ -175,10 +175,8 @@ def markdown_to_html(text):
 
 def parse_html(contents, title, url):
   """ Parse HTML input using Beautiful Soup parser. """
-  # Decode hexadecimal entities because Beautiful Soup doesn't support them :-\
+  # Decode hexadecimal entities because Beautiful Soup doesn't support them :-|
   contents = re.sub(r'&#x([0-9A-Fa-f]+);', lambda n: chr(int(n.group(1), 16)), contents)
-  # Remove copyright signs.
-  contents = contents.replace(u'\xa9', 'Copyright')
   tree = BeautifulSoup(contents, convertEntities = BeautifulSoup.ALL_ENTITIES)
   # Restrict conversion to content text.
   root = tree.find(id = 'content')
@@ -310,7 +308,10 @@ def print_block(item, output, tags, level, filename):
     text = trim_lines(text)
     if item[0] in ('li', 'dt', 'dd'):
       text = ' - ' + text
-    # Make Lua manual more useful by making paragraph numbers help tags.
+    # Replace copyright signs with the text `copyright' (this is very specific
+    # to the README.md files I write for my own Vim plug-ins).
+    text = text.replace(u'\xa9', 'Copyright')
+    # Make the Lua manual more useful by rewriting paragraph numbers into help tags.
     text = re.sub(u'\xa7(\\d+(\\.\\d+)*)', '|lua-\\1|', text)
     text = wrap_text(text)
     output.append(text)
