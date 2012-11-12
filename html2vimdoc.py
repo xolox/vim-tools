@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+# TODO Don't add link targets inside code blocks!
+
 """
 Convert HTML documents to Vim help files.
 
@@ -53,7 +55,7 @@ from textwrap import dedent
 import urllib
 
 # Extra dependencies.
-from BeautifulSoup import BeautifulSoup, Comment
+from BeautifulSoup import BeautifulSoup, Comment, UnicodeDammit
 
 def main():
   filename, title, url, arguments = parse_args(sys.argv[1:])
@@ -165,14 +167,11 @@ def get_input(filename, url, args):
 
 def markdown_to_html(text):
   """ When the input is Markdown, convert it to HTML so we can parse that. """
-  try:
-    # The Python Markdown module only accepts Unicode and ASCII strings,
-    # but I save my Markdown documents in the UTF-8 encoding.
-    text = text.decode('utf-8')
-  except:
-    pass
+  # The Python Markdown module only accepts Unicode and ASCII strings but I
+  # save my Markdown documents in the UTF-8 encoding. That's why I use
+  # UnicodeDammit to give me Unicode when possible.
   from markdown import markdown
-  return markdown(text)
+  return markdown(UnicodeDammit(text).unicode)
 
 def parse_html(contents, title, url):
   """ Parse HTML input using Beautiful Soup parser. """
