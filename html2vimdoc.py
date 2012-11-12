@@ -85,7 +85,7 @@ def html2vimdoc(html, filename='', title='', url=''):
   lastlevel = 0
   counters = [0]
   toc = []
-  for item in [('h2', 'Introduction')] + blocks:
+  for item in [('h%i' % firstlevel, 'Introduction')] + blocks:
     if item[0] in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
       level = int(item[0][1])
       text = compact(item[1])
@@ -191,8 +191,8 @@ def parse_html(contents, title, url):
   if headings:
     if not title:
       title = compact(node_text(headings[0]))
-      # Remove heading from parse tree.
-      headings[0].extract()
+    # Remove the first top-level heading from the parse tree.
+    headings[0].extract()
   # Remove HTML comments from parse tree.
   [c.extract() for c in root.findAll(text = lambda n: isinstance(n, Comment))]
   # XXX Hacks for the Lua/APR binding documentation: Remove <a href=..>#</a>
