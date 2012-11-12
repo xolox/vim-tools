@@ -83,7 +83,7 @@ def html2vimdoc(html, filename='', title='', url=''):
   # Write a table of contents.
   print_heading('Contents', output, tags, '=', basename)
   lastlevel = 0
-  counters = []
+  counters = [0]
   toc = []
   for item in [('h2', 'Introduction')] + blocks:
     if item[0] in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
