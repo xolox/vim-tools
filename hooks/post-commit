@@ -21,15 +21,11 @@ case $REPO_NAME in
 esac
 
 if [ -n "$PLUGIN_FILE" ]; then
-  VERSION_VARIABLE=$(echo -n $PLUGIN_FILE | sed -e 's@^autoload/@@' -e 's@\.vim$@@' -e 's@/@#@')#version
+  BRANCH_NAME=$(git symbolic-ref HEAD 2>/dev/null | sed 's@^refs/heads/@@')
+  VERSION_VARIABLE="$(echo -n $PLUGIN_FILE | sed -e 's@^autoload/@@' -e 's@\.vim$@@' -e 's@/@#@')#version"
   PLUGIN_VERSION=$(grep "let g:${VERSION_VARIABLE}" $PLUGIN_FILE | cut "-d'" -f2)
-  if [ -n "$PLUGIN_VERSION" ]; then
-    if [ -z $(git tag -l $PLUGIN_VERSION) ]; then
-      git tag $PLUGIN_VERSION
-      # It's very tempting to add "git push && git push --tags" here because I
-      # still forget to push new tags to GitHub but so far I have refrained from
-      # doing this because it would instantly publish every mistake I make to
-      # GitHub :-P (and I make a lot of mistakes ;-)
-    fi
+  EXISTING_TAGS="$(git tag -l $PLUGIN_VERSION)"
+  if [ "$BRANCH_NAME" = master -a -n "$PLUGIN_VERSION" -a -z "$EXISTING_TAGS" ]; then
+    git tag $PLUGIN_VERSION
   fi
 fi
