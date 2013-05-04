@@ -30,6 +30,16 @@ if ! git show HEAD:.gitignore 2>/dev/null | grep -q '^doc/tags$'; then
   fi
 fi
 
+# Update the year of copyright in README.md.
+CURRENT_YEAR=$(date +%Y)
+sed "s/^© [0-9][0-9][0-9][0-9]/© $CURRENT_YEAR/" < README.md > README.md.new
+if cmp --quiet README.md README.md.new; then
+  rm README.md.new
+else
+  mv README.md.new README.md
+  git add README.md
+fi
+
 if [ -n "$VIM_HELP_FILE" ]; then
   html2vimdoc -f $VIM_HELP_FILE README.md > doc/$VIM_HELP_FILE
   git add doc/$VIM_HELP_FILE
