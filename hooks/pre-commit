@@ -40,7 +40,9 @@ else
   git add README.md
 fi
 
+# Update the generated Vim help file?
 if [ -n "$VIM_HELP_FILE" ]; then
-  html2vimdoc -f $VIM_HELP_FILE README.md > doc/$VIM_HELP_FILE
+  python ~/Dropbox/Projects/Vim/tools/html2vimdoc.py \
+    -f $VIM_HELP_FILE README.md > doc/$VIM_HELP_FILE
   git add doc/$VIM_HELP_FILE
 fi
