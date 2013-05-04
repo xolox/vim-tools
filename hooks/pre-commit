@@ -20,6 +20,16 @@ case $REPO_NAME in
   vim-shell)           VIM_HELP_FILE=shell.txt      ;;
 esac
 
+# Check that .gitignore file is committed and excludes doc/tags.
+if ! git show HEAD:.gitignore 2>/dev/null | grep -q '^doc/tags$'; then
+  # Check if the line is being added in the upcoming commit.
+  if ! git diff --cached .gitignore 2>/dev/null | grep -q '^+doc/tags$'; then
+    # If neither is true, we abort the commit.
+    echo "Error: .gitignore does not exclude doc/tags! Please fix.." >&2
+    exit 1
+  fi
+fi
+
 if [ -n "$VIM_HELP_FILE" ]; then
   html2vimdoc -f $VIM_HELP_FILE README.md > doc/$VIM_HELP_FILE
   git add doc/$VIM_HELP_FILE
