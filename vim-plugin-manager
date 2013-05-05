@@ -149,6 +149,7 @@ class VimPluginManager:
         for plugin_name in parser.sections():
             self.logger.debug("Loading plug-in: %s", plugin_name)
             items = dict(parser.items(plugin_name))
+            items['name'] = plugin_name
             directory = os.path.expanduser(items['directory'])
             if not os.path.isdir('%s/.git' % directory):
                 msg = "Configuration error: The directory %s is not a git repository!"
@@ -319,8 +320,8 @@ class VimPluginManager:
         Install wrapper scripts for the shared git hooks
         """
         self.logger.info("Installing git hooks ..")
-        for plugin_name in sorted(self.plugins.keys()):
-            repository = self.plugins[plugin_name]['directory']
+        for plugin in self.sorted_plugins:
+            repository = plugin['directory']
             directory = '%s/.git/hooks' % repository
             self.logger.debug("Deleting old hooks in %s ..", repository)
             for entry in os.listdir(directory):
@@ -428,6 +429,13 @@ class VimPluginManager:
                 run('git', 'tag', version)
         
     ## Miscellaneous methods.
+
+    @property
+    def sorted_plugins(self):
+        def sort_key(plugin):
+            user, repository = plugin['name'].split('/')
+            return repository.lower()
+        return sorted(self.plugins.values(), key=sort_key)
 
     def find_current_plugin(self):
         """
