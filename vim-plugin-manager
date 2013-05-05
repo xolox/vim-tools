@@ -22,7 +22,7 @@ Supported options:
   -n, --dry-run      don't actually upload anything anywhere
   -i, --install      install shared pre/post commit hooks
   -p, --pre-commit   run shared pre-commit hooks
-  -P, --post-commit  run shared pre-commit hooks
+  -P, --post-commit  run shared post-commit hooks
   -r, --release      release to GitHub [and Vim Online]
   -v, --verbose      make more noise
   -h, --help         show this message and exit
@@ -63,7 +63,7 @@ def main():
                 ['dry-run', 'install', 'pre-commit', 'post-commit', 'release', 'verbose', 'help'])
     except Exception, e:
         sys.stderr.write("Error: %s\n\n" % e)
-        sys.stdout.write("%s\n" % __doc__.strip())
+        usage()
         sys.exit(1)
 
     # Command line option defaults.
@@ -89,23 +89,28 @@ def main():
         elif option in ('-v', '--verbose'):
             verbose = True
         elif option in ('-h', '--help'):
-            sys.stdout.write("%s\n" % __doc__.strip())
+            usage()
             return
         else:
             assert False, "Unhandled option!"
 
-    # Initialize the Vim plug-in manager with the selected options.
-    manager = VimPluginManager(dry_run=dry_run, verbose=verbose)
+    if not (install or pre_commit or post_commit or release):
+        usage()
+    else:
+        # Initialize the Vim plug-in manager with the selected options.
+        manager = VimPluginManager(dry_run=dry_run, verbose=verbose)
+        # Execute the requested action.
+        if install:
+            manager.install_git_hooks()
+        if pre_commit:
+            manager.run_precommit_hooks()
+        if post_commit:
+            manager.run_postcommit_hooks()
+        if release:
+            manager.publish_release()
 
-    # Execute the requested action.
-    if install:
-        manager.install_git_hooks()
-    if pre_commit:
-        manager.run_precommit_hooks()
-    if post_commit:
-        manager.run_postcommit_hooks()
-    if release:
-        manager.publish_release()
+def usage():
+    sys.stdout.write("%s\n" % __doc__.strip())
 
 class VimPluginManager:
 
