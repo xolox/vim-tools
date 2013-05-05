@@ -334,11 +334,11 @@ class VimPluginManager:
                 self.logger.debug("Deleting old hooks in %s ..", repository)
                 for entry in os.listdir(directory):
                     os.unlink('%s/%s' % (directory, entry))
-            self.create_hook_script('%s/pre-commit' % directory)
-            self.create_hook_script('%s/post-commit' % directory)
+            self.create_hook_script(repository, '%s/pre-commit' % directory)
+            self.create_hook_script(repository, '%s/post-commit' % directory)
         self.logger.info("Done. Created git hooks for %i plug-ins.", len(self.plugins))
 
-    def create_hook_script(self, hook_path):
+    def create_hook_script(self, repository, hook_path):
         """
         Create a git hook using a small wrapper script instead of a symbolic
         link. I keep my Vim profile and the git repositories of my plug-ins in
@@ -352,7 +352,7 @@ class VimPluginManager:
         # and Linux. For this reason we generate a relative path to the
         # vim-plugin-manager script so that the hook works on both Linux
         # (/home/*) and Mac OS X (/Users/*).
-        relpath = os.path.relpath(__file__, os.path.dirname(hook_path))
+        relpath = os.path.relpath(__file__, repository)
         with open(hook_path, 'w') as handle:
             handle.write('#!/bin/bash\n\n')
             handle.write('exec %s --%s\n' % (relpath, hook_name))
