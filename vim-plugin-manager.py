@@ -127,21 +127,41 @@ class VimPluginManager:
         """
         self.plugins = {}
         self.dry_run = dry_run
-        self.init_logging()
+        self.init_logging(verbose)
         self.load_configuration()
         if dry_run:
             self.logger.info("Enabling dry run.")
-        if verbose:
-            self.logger.info("Enabling verbose output.")
-            self.logger.setLevel(logging.DEBUG)
 
-    def init_logging(self):
+    def init_logging(self, verbose):
         """
         Initialize the logging subsystem.
         """
+        # Create a logger instance.
         self.logger = logging.getLogger('vim-plugin-manager')
-        self.logger.addHandler(coloredlogs.ColoredConsoleHandler())
-        self.logger.setLevel(logging.INFO)
+        self.logger.setLevel(logging.DEBUG)
+        # Add a handler for logging to a file.
+        log_file = os.path.expanduser('~/.vim-plugin-manager.log')
+        log_exists = os.path.isfile(log_file)
+        file_handler = coloredlogs.ColoredConsoleHandler(open(log_file, 'a'), isatty=False)
+        self.logger.addHandler(file_handler)
+        # The log file is always verbose.
+        file_handler.setLevel(logging.DEBUG)
+        # Add a delimiter to the log file to delimit the messages of the
+        # current run from those of previous runs.
+        if log_exists:
+            self.logger.info("-" * 40)
+        # Add a logging handler for console output, after logging the delimiter
+        # to the log file (the delimiter is useless on the console).
+        console_handler = coloredlogs.ColoredConsoleHandler()
+        self.logger.addHandler(console_handler)
+        # Set the verbosity of the console output.
+        if verbose:
+            console_handler.setLevel(logging.DEBUG)
+            self.logger.debug("Enabling verbose output.")
+        else:
+            console_handler.setLevel(logging.INFO)
+        # Mention the log file on the console after setting the verbosity.
+        self.logger.debug("Logging messages to %s.", log_file)
 
     def load_configuration(self):
         """
