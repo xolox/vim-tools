@@ -177,15 +177,15 @@ class VimPluginManager:
                 self.logger.info("Everything up to date!")
             else:
                 if self.dry_run:
-                    self.logger.info("Skipping GitHub push because we're doing a dry run.")
+                    self.logger.warn("Skipping GitHub push because we're doing a dry run.")
                 else:
                     self.publish_changes_to_github()
                 suggested_changelog = self.generate_changelog(plugin_name, previous_release, committed_version)
                 approved_changelog = self.approve_changelog(suggested_changelog)
                 if not approved_changelog.strip():
-                    self.logger.warn("Empty change log, canceling release ..")
+                    self.logger.error("Empty change log, canceling release ..")
                 elif self.dry_run:
-                    self.logger.info("Skipping Vim Online release because we're doing a dry run.")
+                    self.logger.warn("Skipping Vim Online release because we're doing a dry run.")
                 else:
                     self.publish_release_to_vim_online(plugin_name, committed_version, approved_changelog)
                     self.show_release_on_vim_online(plugin_name)
@@ -196,7 +196,6 @@ class VimPluginManager:
             self.logger.exception(e)
             sys.exit(1)
         except Exception, e:
-            self.logger.fatal("Something went terribly wrong!")
             self.logger.exception(e)
             sys.exit(1)
 
@@ -220,15 +219,18 @@ class VimPluginManager:
         # release and the current one.
         commit_range = previous_version + '..' + current_version
         # Generate the change log from the abbreviated commit message(s).
-        changelog = []
+        items = []
         repo_url = 'http://github.com/%s' % plugin_name
         for line in reversed(run('git', 'log', '--pretty=oneline', '--abbrev-commit', commit_range).splitlines()):
             commit_hash, commit_desc = line.split(None, 1)
-            changelog.append(' \x95 %s:\n' % commit_desc.strip().rstrip(':') +
-                             '   %s/commit/%s\n\n' % (repo_url, commit_hash))
-        return changelog.rstrip()
+            items.append(' \x95 %s:\n' % commit_desc.strip().rstrip(':') +
+                             '   %s/commit/%s' % (repo_url, commit_hash))
+        changelog = '\n\n'.join(items)
+        for line in changelog.splitlines():
+            self.logger.debug("%s", cp1252_to_utf8(line))
+        return changelog
 
-    def approve_changelog(self, suggested_changelog):
+    def approve_changelog(self, changelog):
         """
         Open the suggested change log in a text editor so the user gets a
         chance to inspect the suggested change log, make any required changes
@@ -237,15 +239,19 @@ class VimPluginManager:
         # Save the change log to a temporary file.
         fname = '/tmp/vim-online-changelog'
         with open(fname, 'w') as handle:
-            handle.write(suggested_changelog)
+            handle.write(changelog)
         # Run Vim with the cp1252 encoding because this is the encoding
         # expected by http://www.vim.org.
+        self.logger.info("Waiting for approval of change log ..")
         run('gvim', '-fc', 'e ++enc=cp1252 %s' % fname)
         # Get the approved change log.
         with open(fname) as handle:
-            approved_changelog = handle.read()
+            changelog = handle.read().rstrip()
         os.unlink(fname)
-        return approved_changelog.rstrip()
+        # Log the approved change log.
+        for line in changelog.splitlines():
+            self.logger.debug("%s", cp1252_to_utf8(line))
+        return changelog
 
     def publish_release_to_vim_online(self, plugin_name, new_version, changelog):
         """
@@ -556,6 +562,13 @@ def run(*command):
         msg = "External command %r exited with code %i"
         raise ExternalCommandFailed(msg % (command, process.returncode), command)
     return stdout.strip()
+
+def cp1252_to_utf8(text):
+    """
+    Vim Online expects change logs encoded in CP-1252, however everywhere else
+    I want UTF-8 (e.g. on the console and in the log file).
+    """
+    return text.decode('windows-1252').encode('utf-8')
 
 if __name__ == '__main__':
     main()
