@@ -323,11 +323,15 @@ class VimPluginManager:
         for plugin in self.sorted_plugins:
             repository = plugin['directory']
             directory = '%s/.git/hooks' % repository
-            self.logger.debug("Deleting old hooks in %s ..", repository)
-            for entry in os.listdir(directory):
-                os.unlink('%s/%s' % (directory, entry))
+            if not os.path.isdir(directory):
+                os.mkdir(directory)
+            else:
+                self.logger.debug("Deleting old hooks in %s ..", repository)
+                for entry in os.listdir(directory):
+                    os.unlink('%s/%s' % (directory, entry))
             self.create_hook_script('%s/pre-commit' % directory)
             self.create_hook_script('%s/post-commit' % directory)
+        self.logger.info("Done. Created git hooks for %i plug-ins.", len(self.plugins))
 
     def create_hook_script(self, hook_path):
         """
