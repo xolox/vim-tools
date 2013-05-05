@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 # vim: set fileencoding=utf-8 :
 
-# TODO Use this script as pre/post-commit hook?!
 # TODO Automatically run tests before release? (first have to start writing them!)
 
 """
@@ -20,11 +19,13 @@ automated workflow that includes the following steps:
  8. Run a post-release hook for any further custom handling.
 
 Supported options:
-  -n, --dry-run     don't actually upload anything anywhere
-  -p, --pre-commit  run the shared pre-commit hooks
-  -r, --release     release to GitHub [and Vim Online]
-  -v, --verbose     make more noise
-  -h, --help        show this message and exit
+  -n, --dry-run      don't actually upload anything anywhere
+  -i, --install      install shared pre/post commit hooks
+  -p, --pre-commit   run shared pre-commit hooks
+  -P, --post-commit  run shared pre-commit hooks
+  -r, --release      release to GitHub [and Vim Online]
+  -v, --verbose      make more noise
+  -h, --help         show this message and exit
 """
 
 # Standard library modules.
@@ -58,8 +59,8 @@ def main():
 
     # Parse the command line arguments.
     try:
-        options, arguments = getopt.getopt(sys.argv[1:], 'nprvh',
-                ['dry-run', 'pre-commit', 'release', 'verbose', 'help'])
+        options, arguments = getopt.getopt(sys.argv[1:], 'nipPrvh',
+                ['dry-run', 'install', 'pre-commit', 'post-commit', 'release', 'verbose', 'help'])
     except Exception, e:
         sys.stderr.write("Error: %s\n\n" % e)
         sys.stdout.write("%s\n" % __doc__.strip())
@@ -68,15 +69,21 @@ def main():
     # Command line option defaults.
     dry_run = False
     verbose = False
+    install = False
     pre_commit = False
+    post_commit = False
     release = False
 
     # Map options to variables.
     for option, value in options:
         if option in ('-n', '--dry-run'):
             dry_run = True
+        elif option in ('-i', '--install'):
+            install = True
         elif option in ('-p', '--pre-commit'):
             pre_commit = True
+        elif option in ('-P', '--post-commit'):
+            post_commit = True
         elif option in ('-r', '--release'):
             release = True
         elif option in ('-v', '--verbose'):
@@ -91,8 +98,12 @@ def main():
     manager = VimPluginManager(dry_run=dry_run, verbose=verbose)
 
     # Execute the requested action.
+    if install:
+        manager.install_git_hooks()
     if pre_commit:
         manager.run_precommit_hooks()
+    if post_commit:
+        manager.run_postcommit_hooks()
     if release:
         manager.publish_release()
 
@@ -137,7 +148,13 @@ class VimPluginManager:
         parser.read(filename)
         for plugin_name in parser.sections():
             self.logger.debug("Loading plug-in: %s", plugin_name)
-            self.plugins[plugin_name] = dict(parser.items(plugin_name))
+            items = dict(parser.items(plugin_name))
+            directory = os.path.expanduser(items['directory'])
+            if not os.path.isdir('%s/.git' % directory):
+                msg = "Configuration error: The directory %s is not a git repository!"
+                raise Exception, msg % directory
+            items['directory'] = directory
+            self.plugins[plugin_name] = items
 
     ## Release management.
 
@@ -295,6 +312,42 @@ class VimPluginManager:
             self.logger.info("Running post-release hook %s ..", pathname)
             run(pathname)
 
+    ## Git hook management.
+
+    def install_git_hooks(self):
+        """
+        Install wrapper scripts for the shared git hooks
+        """
+        self.logger.info("Installing git hooks ..")
+        for plugin_name in sorted(self.plugins.keys()):
+            repository = self.plugins[plugin_name]['directory']
+            directory = '%s/.git/hooks' % repository
+            self.logger.debug("Deleting old hooks in %s ..", repository)
+            for entry in os.listdir(directory):
+                os.unlink('%s/%s' % (directory, entry))
+            self.create_hook_script('%s/pre-commit' % directory)
+            self.create_hook_script('%s/post-commit' % directory)
+
+    def create_hook_script(self, hook_path):
+        """
+        Create a git hook using a small wrapper script instead of a symbolic
+        link. I keep my Vim profile and the git repositories of my plug-ins in
+        my Dropbox and unfortunately Dropbox does not support symbolic links
+        (it doesn't synchronize the link, it synchronizes the content, so the
+        actual symbolic link only exists on the machine where it was created).
+        """
+        self.logger.debug("Creating hook script: %s", hook_path)
+        hook_name = os.path.basename(hook_path)
+        # The hook scripts become part of my Dropbox, synced between Mac OS X
+        # and Linux. For this reason we generate a relative path to the
+        # vim-plugin-manager script so that the hook works on both Linux
+        # (/home/*) and Mac OS X (/Users/*).
+        relpath = os.path.relpath(__file__, os.path.dirname(hook_path))
+        with open(hook_path, 'w') as handle:
+            handle.write('#!/bin/bash\n\n')
+            handle.write('exec %s --%s\n' % (relpath, hook_name))
+        os.chmod(hook_path, 0755)
+
     ## Pre-commit hooks.
 
     def run_precommit_hooks(self):
@@ -359,6 +412,21 @@ class VimPluginManager:
             handle.write(vimdoc)
         run('git', 'add', help_path)
 
+    ## Post-commit hooks.
+
+    def run_postcommit_hooks(self):
+        """
+        Automatic plug-in/repository maintenance just after a commit is made.
+        """
+        self.logger.info("Running post-commit hooks ..")
+        plugin_name = self.find_current_plugin()
+        if self.on_master_branch():
+            version = self.find_version_in_repository(plugin_name)
+            existing_tags = run('git', 'tag').split()
+            if version not in existing_tags:
+                self.logger.info("Creating tag for version %s ..", version)
+                run('git', 'tag', version)
+        
     ## Miscellaneous methods.
 
     def find_current_plugin(self):
@@ -380,6 +448,14 @@ class VimPluginManager:
             msg = "The repository %r doesn't contain a known Vim plug-in!"
             raise Exception, msg % plugin_name
         return plugin_name
+
+    def on_master_branch(self):
+        """
+        Check if the master branch is currently checked out.
+        """
+        output = run('git', 'symbolic-ref', 'HEAD')
+        tokens = output.split('/')
+        return tokens[-1] == 'master'
 
     def find_version_on_vim_online(self, plugin_name):
         """
