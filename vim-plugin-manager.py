@@ -259,7 +259,7 @@ class VimPluginManager:
         # Find the script ID in the plug-in configuration.
         script_id = int(self.plugins[plugin_name]['script-id'])
         # Generate the ZIP archive and up-load it.
-        zip_archive = self.generate_release_archive()
+        zip_archive = self.generate_release_archive(plugin_name)
         with open(zip_archive) as zip_handle:
             # Open a session to Vim Online.
             self.logger.debug("Connecting to Vim Online ..")
