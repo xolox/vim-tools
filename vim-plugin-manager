@@ -433,7 +433,9 @@ class VimPluginManager:
         if self.on_master_branch():
             version = self.find_version_in_repository(plugin_name)
             existing_tags = run('git', 'tag').split()
-            if version not in existing_tags:
+            if version in existing_tags:
+                self.logger.debug("Tag %s already exists ..", version)
+            else:
                 self.logger.info("Creating tag for version %s ..", version)
                 run('git', 'tag', version)
         
