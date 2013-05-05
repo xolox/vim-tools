@@ -418,8 +418,8 @@ class VimPluginManager:
         vimdoc = html2vimdoc.html2vimdoc(html, filename=help_file)
         if not os.path.isdir('doc'):
             os.mkdir('doc')
-        with open(help_path, 'w') as handle:
-            handle.write(vimdoc)
+        with codecs.open(help_path, 'w', 'utf-8') as handle:
+            handle.write("%s\n" % vimdoc)
         run('git', 'add', help_path)
 
     ## Post-commit hooks.
