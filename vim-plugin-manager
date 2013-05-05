@@ -20,13 +20,15 @@ automated workflow that includes the following steps:
  8. Run a post-release hook for any further custom handling.
 
 Supported options:
-  -n, --dry-run  don't actually upload anything anywhere
-  -r, --release  release to GitHub [and Vim Online]
-  -v, --verbose  make more noise
-  -h, --help     show this message and exit
+  -n, --dry-run     don't actually upload anything anywhere
+  -p, --pre-commit  run the shared pre-commit hooks
+  -r, --release     release to GitHub [and Vim Online]
+  -v, --verbose     make more noise
+  -h, --help        show this message and exit
 """
 
 # Standard library modules.
+import codecs
 import ConfigParser
 import getopt
 import logging
@@ -35,6 +37,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib
 import webbrowser
 
@@ -43,8 +46,9 @@ import webbrowser
 #  pip install mechanize
 import mechanize
 
-# External dependency, bundled with the Vim plug-in manager.
+# External dependencies, bundled with the Vim plug-in manager.
 import coloredlogs
+import html2vimdoc
 
 def main():
 
@@ -54,8 +58,8 @@ def main():
 
     # Parse the command line arguments.
     try:
-        options, arguments = getopt.getopt(sys.argv[1:], 'nrvh',
-                ['dry-run', 'release', 'verbose', 'help'])
+        options, arguments = getopt.getopt(sys.argv[1:], 'nprvh',
+                ['dry-run', 'pre-commit', 'release', 'verbose', 'help'])
     except Exception, e:
         sys.stderr.write("Error: %s\n\n" % e)
         sys.stdout.write("%s\n" % __doc__.strip())
@@ -64,12 +68,15 @@ def main():
     # Command line option defaults.
     dry_run = False
     verbose = False
+    pre_commit = False
     release = False
 
     # Map options to variables.
     for option, value in options:
         if option in ('-n', '--dry-run'):
             dry_run = True
+        elif option in ('-p', '--pre-commit'):
+            pre_commit = True
         elif option in ('-r', '--release'):
             release = True
         elif option in ('-v', '--verbose'):
@@ -84,6 +91,8 @@ def main():
     manager = VimPluginManager(dry_run=dry_run, verbose=verbose)
 
     # Execute the requested action.
+    if pre_commit:
+        manager.run_precommit_hooks()
     if release:
         manager.publish_release()
 
@@ -130,6 +139,8 @@ class VimPluginManager:
             self.logger.debug("Loading plug-in: %s", plugin_name)
             self.plugins[plugin_name] = dict(parser.items(plugin_name))
 
+    ## Release management.
+
     def publish_release(self):
         """
         The main function of the Vim plug-in manager: Publishing new releases
@@ -165,84 +176,6 @@ class VimPluginManager:
             self.logger.fatal("Something went terribly wrong!")
             self.logger.exception(e)
             sys.exit(1)
-
-    def find_current_plugin(self):
-        """
-        Find the name of the "current" plug-in based on the git repository in
-        the current working directory or any of the parent directories (which
-        is how git usually works).
-        """
-        self.logger.debug("Finding current plug-in using 'git config --get remote.origin.url' ..")
-        remote_origin_url = run('git', 'config', '--get', 'remote.origin.url')
-        self.logger.debug("Raw output: %r", remote_origin_url)
-        pattern_match = re.match(r'^git@github\.com:(.+?)\.git$', remote_origin_url)
-        if not pattern_match:
-            msg = "Failed to parse remote origin URL! (%r)"
-            raise Exception, msg % remote_origin_url
-        plugin_name = pattern_match.group(1)
-        self.logger.info("Found current plug-in: %s", plugin_name)
-        if plugin_name not in self.plugins:
-            msg = "The repository %r doesn't contain a known Vim plug-in!"
-            raise Exception, msg % plugin_name
-        return plugin_name
-
-    def find_version_on_vim_online(self, plugin_name):
-        """
-        Find the version of a Vim plug-in that is the highest version number
-        that has been released on http://www.vim.org.
-        """
-        # Find the Vim plug-in on http://www.vim.org.
-        script_id = self.plugins[plugin_name]['script-id']
-        vim_online_url = 'http://www.vim.org/scripts/script.php?script_id=%s' % script_id
-        self.logger.debug("Finding last released version on %s ..", vim_online_url)
-        response = urllib.urlopen(vim_online_url)
-        # Make sure the response is valid.
-        if response.getcode() != 200:
-            msg = "URL %r resulted in HTTP %i response!"
-            raise Exception, msg % (vim_online_url, response.getcode())
-        # Find all previously released versions by scraping the HTML.
-        released_versions = []
-        for html_row in re.findall('<tr>.+?</tr>', response.read(), re.DOTALL):
-            if 'download_script.php' in html_row:
-                version_string = re.search('<b>(\d+(?:\.\d+)+)</b>', html_row).group(1)
-                version_number = map(int, version_string.split('.'))
-                self.logger.log(logging.NOTSET, "Parsed version string %r into %r.", version_string, version_number)
-                released_versions.append(version_number)
-        # Make sure the scraping is still effective.
-        if not released_versions:
-            msg = "Failed to find any previous releases on %r!"
-            raise Exception, msg % vim_online_url
-        self.logger.debug("Found %i previous releases, sorting to find the latest ..", len(released_versions))
-        released_versions.sort()
-        previous_release = '.'.join([str(d) for d in released_versions[-1]])
-        self.logger.info("Found last release on Vim Online: %s", previous_release)
-        return previous_release
-
-    def find_version_in_repository(self, plugin_name):
-        """
-        Find the version of a Vim plug-in that is the highest version number
-        that has been committed to the local git repository of the plug-in (the
-        version number is embedded as a string in the main auto-load script of
-        the plug-in).
-        """
-        # Find the auto-load script.
-        autoload_script = self.plugins[plugin_name]['autoload-script']
-        # Find the name of the variable that should contain the version number.
-        autoload_path = re.sub(r'^autoload/(.+?)\.vim$', r'\1', autoload_script)
-        version_definition = 'let g:%s#version' % autoload_path.replace('/', '#')
-        self.logger.debug("Finding local committed version by scanning %s for %r ..", autoload_script, version_definition)
-        # Ignore uncommitted changes in the auto-load script.
-        script_contents = run('git', 'show', 'HEAD:%s' % autoload_script)
-        # Look for the version definition.
-        for line in script_contents.splitlines():
-            if line.startswith(version_definition):
-                tokens = line.split('=', 1)
-                last_token = tokens[-1].strip()
-                version_string = last_token.strip('\'"')
-                self.logger.info("Found last committed version: %s", version_string)
-                return version_string
-        msg = "Failed to determine last committed version of %s!"
-        raise Exception, msg % plugin_name
 
     def publish_changes_to_github(self):
         """
@@ -361,6 +294,150 @@ class VimPluginManager:
         else:
             self.logger.info("Running post-release hook %s ..", pathname)
             run(pathname)
+
+    ## Pre-commit hooks.
+
+    def run_precommit_hooks(self):
+        """
+        Automatic plug-in/repository maintenance just before a commit is made.
+        """
+        self.logger.info("Running pre-commit hooks ..")
+        plugin_name = self.find_current_plugin()
+        self.check_gitignore_file()
+        self.update_copyright()
+        self.update_vimdoc(plugin_name)
+
+    def check_gitignore_file(self):
+        """
+        Make sure .gitignore excludes doc/tags.
+        """
+        self.logger.debug("Checking if .gitignore excludes doc/tags ..")
+        if 'doc/tags' not in run('git', 'show', 'HEAD:.gitignore').splitlines():
+            if '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore').splitlines():
+                self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
+                sys.exit(1)
+
+    def update_copyright(self):
+        """
+        Update the year of copyright in README.md when needed.
+        """
+        contents = []
+        updated_copyright = False
+        self.logger.debug("Checking if copyright in README is up to date ..")
+        with codecs.open('README.md', 'r', 'utf-8') as handle:
+            for line in handle:
+                line = line.rstrip()
+                if line.startswith(u'©'):
+                    replacement = u'© %s' % time.strftime('%Y')
+                    new_line = re.sub(ur'© \d{4}', replacement, line)
+                    if new_line != line:
+                        updated_copyright = True
+                    line = new_line
+                contents.append(line)
+        if updated_copyright:
+            self.logger.info("Copyright in README was not up to date, changing it now ..")
+            with codecs.open('README.md', 'w', 'utf-8') as handle:
+                for line in contents:
+                    handle.write(u'%s\n' % line)
+            run('git', 'add', 'README.md')
+
+    def update_vimdoc(self, plugin_name):
+        """
+        Generate a Vim help file from the README.md file in the git repository
+        of a Vim plug-in using the html2vimdoc.py Python module.
+        """
+        help_file = self.plugins[plugin_name]['help-file']
+        help_path = 'doc/%s' % help_file
+        self.logger.info("Converting README.md to %s ..", help_path)
+        with open('README.md') as handle:
+            markdown = handle.read()
+        html = html2vimdoc.markdown_to_html(markdown)
+        vimdoc = html2vimdoc.html2vimdoc(html, filename=help_file)
+        if not os.path.isdir('doc'):
+            os.mkdir('doc')
+        with open(help_path, 'w') as handle:
+            handle.write(vimdoc)
+        run('git', 'add', help_path)
+
+    ## Miscellaneous methods.
+
+    def find_current_plugin(self):
+        """
+        Find the name of the "current" plug-in based on the git repository in
+        the current working directory or any of the parent directories (which
+        is how git usually works).
+        """
+        self.logger.debug("Finding current plug-in using 'git config --get remote.origin.url' ..")
+        remote_origin_url = run('git', 'config', '--get', 'remote.origin.url')
+        self.logger.debug("Raw output: %r", remote_origin_url)
+        pattern_match = re.match(r'^git@github\.com:(.+?)\.git$', remote_origin_url)
+        if not pattern_match:
+            msg = "Failed to parse remote origin URL! (%r)"
+            raise Exception, msg % remote_origin_url
+        plugin_name = pattern_match.group(1)
+        self.logger.info("Found current plug-in: %s", plugin_name)
+        if plugin_name not in self.plugins:
+            msg = "The repository %r doesn't contain a known Vim plug-in!"
+            raise Exception, msg % plugin_name
+        return plugin_name
+
+    def find_version_on_vim_online(self, plugin_name):
+        """
+        Find the version of a Vim plug-in that is the highest version number
+        that has been released on http://www.vim.org.
+        """
+        # Find the Vim plug-in on http://www.vim.org.
+        script_id = self.plugins[plugin_name]['script-id']
+        vim_online_url = 'http://www.vim.org/scripts/script.php?script_id=%s' % script_id
+        self.logger.debug("Finding last released version on %s ..", vim_online_url)
+        response = urllib.urlopen(vim_online_url)
+        # Make sure the response is valid.
+        if response.getcode() != 200:
+            msg = "URL %r resulted in HTTP %i response!"
+            raise Exception, msg % (vim_online_url, response.getcode())
+        # Find all previously released versions by scraping the HTML.
+        released_versions = []
+        for html_row in re.findall('<tr>.+?</tr>', response.read(), re.DOTALL):
+            if 'download_script.php' in html_row:
+                version_string = re.search('<b>(\d+(?:\.\d+)+)</b>', html_row).group(1)
+                version_number = map(int, version_string.split('.'))
+                self.logger.log(logging.NOTSET, "Parsed version string %r into %r.", version_string, version_number)
+                released_versions.append(version_number)
+        # Make sure the scraping is still effective.
+        if not released_versions:
+            msg = "Failed to find any previous releases on %r!"
+            raise Exception, msg % vim_online_url
+        self.logger.debug("Found %i previous releases, sorting to find the latest ..", len(released_versions))
+        released_versions.sort()
+        previous_release = '.'.join([str(d) for d in released_versions[-1]])
+        self.logger.info("Found last release on Vim Online: %s", previous_release)
+        return previous_release
+
+    def find_version_in_repository(self, plugin_name):
+        """
+        Find the version of a Vim plug-in that is the highest version number
+        that has been committed to the local git repository of the plug-in (the
+        version number is embedded as a string in the main auto-load script of
+        the plug-in).
+        """
+        # Find the auto-load script.
+        autoload_script = self.plugins[plugin_name]['autoload-script']
+        # Find the name of the variable that should contain the version number.
+        autoload_path = re.sub(r'^autoload/(.+?)\.vim$', r'\1', autoload_script)
+        version_definition = 'let g:%s#version' % autoload_path.replace('/', '#')
+        self.logger.debug("Finding local committed version by scanning %s for %r ..", autoload_script, version_definition)
+        # Ignore uncommitted changes in the auto-load script.
+        script_contents = run('git', 'show', 'HEAD:%s' % autoload_script)
+        # Look for the version definition.
+        for line in script_contents.splitlines():
+            if line.startswith(version_definition):
+                tokens = line.split('=', 1)
+                last_token = tokens[-1].strip()
+                version_string = last_token.strip('\'"')
+                self.logger.info("Found last committed version: %s", version_string)
+                return version_string
+        msg = "Failed to determine last committed version of %s!"
+        raise Exception, msg % plugin_name
 
 class ExternalCommandFailed(Exception):
 
