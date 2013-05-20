@@ -19,13 +19,15 @@ automated workflow that includes the following steps:
  8. Run a post-release hook for any further custom handling.
 
 Supported options:
-  -n, --dry-run      don't actually upload anything anywhere
-  -i, --install      install shared pre/post commit hooks
-  -p, --pre-commit   run shared pre-commit hooks
-  -P, --post-commit  run shared post-commit hooks
-  -r, --release      release to GitHub [and Vim Online]
-  -v, --verbose      make more noise
-  -h, --help         show this message and exit
+  -n, --dry-run        don't actually upload anything anywhere
+  -i, --install        install shared pre/post commit hooks
+  -p, --pre-commit     run shared pre-commit hooks
+  -P, --post-commit    run shared post-commit hooks
+  -r, --release        release to GitHub [and Vim Online]
+  -m, --merge          merge vim-misc into all plug-ins
+  -V, --misc-versions  report merged vim-misc versions
+  -v, --verbose        make more noise
+  -h, --help           show this message and exit
 """
 
 # Standard library modules.
@@ -47,9 +49,15 @@ import webbrowser
 #  pip install mechanize
 import mechanize
 
-# External dependencies, bundled with the Vim plug-in manager.
+# External dependency, install with:
+#  pip install coloredlogs
 import coloredlogs
+
+# External dependency bundled with the Vim plug-in manager.
 import html2vimdoc
+
+# Configuration defaults.
+MISC_SCRIPTS_REPO = os.path.expanduser('~/Dropbox/Projects/Vim/0-misc')
 
 def main():
 
@@ -59,8 +67,9 @@ def main():
 
     # Parse the command line arguments.
     try:
-        options, arguments = getopt.getopt(sys.argv[1:], 'nipPrvh',
-                ['dry-run', 'install', 'pre-commit', 'post-commit', 'release', 'verbose', 'help'])
+        options, arguments = getopt.getopt(sys.argv[1:], 'nipPrmVvh',
+                ['dry-run', 'install', 'pre-commit', 'post-commit', 'release',
+                    'merge', 'misc-versions', 'verbose', 'help'])
     except Exception, e:
         sys.stderr.write("Error: %s\n\n" % e)
         usage()
@@ -73,6 +82,8 @@ def main():
     pre_commit = False
     post_commit = False
     release = False
+    merge = False
+    misc_versions = False
 
     # Map options to variables.
     for option, value in options:
@@ -86,6 +97,10 @@ def main():
             post_commit = True
         elif option in ('-r', '--release'):
             release = True
+        elif option in ('-m', '--merge'):
+            merge = True
+        elif option in ('-V', '--misc-versions'):
+            misc_versions = True
         elif option in ('-v', '--verbose'):
             verbose = True
         elif option in ('-h', '--help'):
@@ -94,7 +109,7 @@ def main():
         else:
             assert False, "Unhandled option!"
 
-    if not (install or pre_commit or post_commit or release):
+    if not (install or pre_commit or post_commit or release or merge or misc_versions):
         usage()
     else:
         # Initialize the Vim plug-in manager with the selected options.
@@ -107,7 +122,11 @@ def main():
         if post_commit:
             manager.run_postcommit_hooks()
         if release:
-            manager.publish_release()
+            manager.publish_release(manager.find_current_plugin())
+        if merge:
+            manager.merge_misc_scripts()
+        if misc_versions:
+            manager.report_misc_versions()
 
 def usage():
     sys.stdout.write("%s\n" % __doc__.strip())
@@ -116,8 +135,8 @@ class VimPluginManager:
 
     """
     The Vim plug-in manager is implemented as a class because it has quite a
-    bit of internal state (specifically configuration and logging) and objects
-    provide a nice way to encapsulate this.
+    bit of internal state (specifically configuration and logging) and
+    classes/objects provide a nice way to encapsulate this.
     """
 
     def __init__(self, dry_run=False, verbose=False):
@@ -142,7 +161,7 @@ class VimPluginManager:
         # Add a handler for logging to a file.
         log_file = os.path.expanduser('~/.vim-plugin-manager.log')
         log_exists = os.path.isfile(log_file)
-        file_handler = coloredlogs.ColoredConsoleHandler(open(log_file, 'a'), isatty=False)
+        file_handler = coloredlogs.ColoredStreamHandler(open(log_file, 'a'), isatty=False)
         self.logger.addHandler(file_handler)
         # The log file is always verbose.
         file_handler.setLevel(logging.DEBUG)
@@ -152,7 +171,7 @@ class VimPluginManager:
             self.logger.info("-" * 40)
         # Add a logging handler for console output, after logging the delimiter
         # to the log file (the delimiter is useless on the console).
-        console_handler = coloredlogs.ColoredConsoleHandler()
+        console_handler = coloredlogs.ColoredStreamHandler()
         self.logger.addHandler(console_handler)
         # Set the verbosity of the console output.
         if verbose:
@@ -184,22 +203,24 @@ class VimPluginManager:
 
     ## Release management.
 
-    def publish_release(self):
+    def publish_release(self, plugin_name):
         """
         The main function of the Vim plug-in manager: Publishing new releases
         to GitHub and Vim Online.
         """
         try:
-            plugin_name = self.find_current_plugin()
+            if self.dry_run:
+                self.logger.warn("Skipping GitHub push because we're doing a dry run.")
+            else:
+                self.publish_changes_to_github(plugin_name)
+            if 'script-id' not in self.plugins[plugin_name]:
+                self.logger.info("The plug-in %s does not have a script-id, so can't be published to vim.org.", plugin_name)
+                return
             previous_release = self.find_version_on_vim_online(plugin_name)
             committed_version = self.find_version_in_repository(plugin_name)
             if committed_version == previous_release:
                 self.logger.info("Everything up to date!")
             else:
-                if self.dry_run:
-                    self.logger.warn("Skipping GitHub push because we're doing a dry run.")
-                else:
-                    self.publish_changes_to_github()
                 suggested_changelog = self.generate_changelog(plugin_name, previous_release, committed_version)
                 approved_changelog = self.approve_changelog(suggested_changelog)
                 if not approved_changelog.strip():
@@ -219,13 +240,14 @@ class VimPluginManager:
             self.logger.exception(e)
             sys.exit(1)
 
-    def publish_changes_to_github(self):
+    def publish_changes_to_github(self, plugin_name):
         """
         Publish committed changes and tags to the remote repository on GitHub.
         """
         self.logger.info("Pushing change sets to GitHub ..")
-        run('git', 'push', 'origin', 'master')
-        run('git', 'push', '--tags')
+        directory = self.plugins[plugin_name]['directory']
+        run('git', 'push', 'origin', 'master', cwd=directory)
+        run('git', 'push', '--tags', cwd=directory)
 
     def generate_changelog(self, plugin_name, previous_version, current_version):
         """
@@ -241,7 +263,9 @@ class VimPluginManager:
         # Generate the change log from the abbreviated commit message(s).
         items = []
         repo_url = 'http://github.com/%s' % plugin_name
-        for line in reversed(run('git', 'log', '--pretty=oneline', '--abbrev-commit', commit_range).splitlines()):
+        commit_log = run('git', 'log', '--pretty=oneline', '--abbrev-commit', commit_range,
+                         cwd=self.plugins[plugin_name]['directory'])
+        for line in reversed(commit_log.splitlines()):
             commit_hash, commit_desc = line.split(None, 1)
             items.append(' \x95 %s:\n' % commit_desc.strip().rstrip(':') +
                              '   %s/commit/%s' % (repo_url, commit_hash))
@@ -263,7 +287,7 @@ class VimPluginManager:
         # Run Vim with the cp1252 encoding because this is the encoding
         # expected by http://www.vim.org.
         self.logger.info("Waiting for approval of change log ..")
-        run('gvim', '-fc', 'e ++enc=cp1252 %s' % fname)
+        run('gvim', '--noplugin', '-fc', 'e ++enc=cp1252 %s' % fname)
         # Get the approved change log.
         with open(fname) as handle:
             changelog = handle.read().rstrip()
@@ -288,9 +312,10 @@ class VimPluginManager:
         zip_archive = self.generate_release_archive(plugin_name)
         with open(zip_archive) as zip_handle:
             # Open a session to Vim Online.
-            self.logger.debug("Connecting to Vim Online ..")
+            add_script_url = "http://www.vim.org/scripts/add_script_version.php?script_id=%i" % script_id
+            self.logger.debug("Connecting to Vim Online at %s ..", add_script_url)
             session = mechanize.Browser()
-            session.open("http://www.vim.org/scripts/add_script_version.php?script_id=%i" % script_id)
+            session.open(add_script_url)
             # Fill in the login form.
             self.logger.debug("Logging in on Vim Online ..")
             session.select_form('login')
@@ -305,7 +330,7 @@ class VimPluginManager:
             session['version_comment'] = changelog
             session.form.add_file(zip_handle, 'application/zip', os.path.basename(zip_archive), 'script_file')
             session.submit()
-            self.logger.debug("Finished uploading release archive!")
+            self.logger.info("Finished uploading release archive!")
         # Cleanup the release archive.
         os.unlink(zip_archive)
 
@@ -316,7 +341,8 @@ class VimPluginManager:
         """
         filename = '/tmp/%s' % self.plugins[plugin_name]['zip-file']
         self.logger.info("Saving ZIP archive of HEAD to %s ..", filename)
-        run('git', 'archive', '-o', filename, 'HEAD')
+        run('git', 'archive', '-o', filename, 'HEAD',
+            cwd=self.plugins[plugin_name]['directory'])
         return filename
 
     def show_release_on_vim_online(self, plugin_name):
@@ -348,7 +374,7 @@ class VimPluginManager:
 
     def install_git_hooks(self):
         """
-        Install wrapper scripts for the shared git hooks
+        Install wrapper scripts for the shared git hooks.
         """
         self.logger.info("Installing git hooks ..")
         for plugin in self.sorted_plugins:
@@ -392,28 +418,40 @@ class VimPluginManager:
         """
         self.logger.info("Running pre-commit hooks ..")
         plugin_name = self.find_current_plugin()
-        self.check_gitignore_file()
-        self.update_copyright()
+        self.check_gitignore_file(plugin_name)
+        self.update_copyright(plugin_name)
         self.update_vimdoc(plugin_name)
 
-    def check_gitignore_file(self):
+    def check_gitignore_file(self, plugin_name):
         """
         Make sure .gitignore excludes doc/tags.
         """
         self.logger.debug("Checking if .gitignore excludes doc/tags ..")
-        if 'doc/tags' not in run('git', 'show', 'HEAD:.gitignore').splitlines():
-            if '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore').splitlines():
-                self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
-                sys.exit(1)
+        directory = self.plugins[plugin_name]['directory']
+        # Make sure there is an initial commit, otherwise git on Ubuntu 10.04
+        # will error out with "fatal: No HEAD commit to compare with (yet)".
+        self.logger.debug("Checking whether there is an initial commit ..")
+        try:
+            run('git', 'rev-parse', 'HEAD')
+        except ExternalCommandFailed:
+            self.logger.warn("No initial commit yet, can't check .gitignore!")
+            return
+        # There is an initial commit: We can check the .gitignore file!
+        if ('doc/tags' not in run('git', 'show', 'HEAD:.gitignore', cwd=directory).splitlines() and
+                '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore', cwd=directory).splitlines()):
+            self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
+            sys.exit(1)
 
-    def update_copyright(self):
+    def update_copyright(self, plugin_name):
         """
         Update the year of copyright in README.md when needed.
         """
         contents = []
         updated_copyright = False
         self.logger.debug("Checking if copyright in README is up to date ..")
-        with codecs.open('README.md', 'r', 'utf-8') as handle:
+        directory = self.plugins[plugin_name]['directory']
+        filename = os.path.join(directory, 'README.md')
+        with codecs.open(filename, 'r', 'utf-8') as handle:
             for line in handle:
                 line = line.rstrip()
                 if line.startswith(u'©'):
@@ -425,28 +463,31 @@ class VimPluginManager:
                 contents.append(line)
         if updated_copyright:
             self.logger.info("Copyright in README was not up to date, changing it now ..")
-            with codecs.open('README.md', 'w', 'utf-8') as handle:
+            with codecs.open(filename, 'w', 'utf-8') as handle:
                 for line in contents:
                     handle.write(u'%s\n' % line)
-            run('git', 'add', 'README.md')
+            run('git', 'add', 'README.md', cwd=directory)
 
     def update_vimdoc(self, plugin_name):
         """
         Generate a Vim help file from the README.md file in the git repository
         of a Vim plug-in using the html2vimdoc.py Python module.
         """
+        directory = self.plugins[plugin_name]['directory']
+        readme = os.path.join(directory, 'README.md')
+        help_dir = os.path.join(directory, 'doc')
         help_file = self.plugins[plugin_name]['help-file']
-        help_path = 'doc/%s' % help_file
-        self.logger.info("Converting README.md to %s ..", help_path)
-        with open('README.md') as handle:
+        help_path = os.path.join(help_dir, help_file)
+        self.logger.info("Converting %s to %s ..", readme, help_path)
+        with open(readme) as handle:
             markdown = handle.read()
         html = html2vimdoc.markdown_to_html(markdown)
         vimdoc = html2vimdoc.html2vimdoc(html, filename=help_file)
-        if not os.path.isdir('doc'):
-            os.mkdir('doc')
+        if not os.path.isdir(help_dir):
+            os.mkdir(help_dir)
         with codecs.open(help_path, 'w', 'utf-8') as handle:
             handle.write("%s\n" % vimdoc)
-        run('git', 'add', help_path)
+        run('git', 'add', help_path, cwd=directory)
 
     ## Post-commit hooks.
 
@@ -456,51 +497,230 @@ class VimPluginManager:
         """
         self.logger.info("Running post-commit hooks ..")
         plugin_name = self.find_current_plugin()
-        if self.on_master_branch():
+        if self.on_master_branch(plugin_name):
             version = self.find_version_in_repository(plugin_name)
-            existing_tags = run('git', 'tag').split()
+            directory = self.plugins[plugin_name]['directory']
+            existing_tags = run('git', 'tag', cwd=directory).split()
             if version in existing_tags:
                 self.logger.debug("Tag %s already exists ..", version)
             else:
                 self.logger.info("Creating tag for version %s ..", version)
-                run('git', 'tag', version)
-        
+                run('git', 'tag', version, cwd=directory)
+
+    ## Handling of vim-misc merge strategy.
+
+    def report_misc_versions(self):
+        """
+        Report merged vim-misc versions.
+        """
+        # Find the commits in the vim-misc repository.
+        misc_commits = self.git_rev_list(MISC_SCRIPTS_REPO)
+        for plugin in self.sorted_plugins:
+            # Find the commits in the plug-in repository.
+            plugin_commits = self.git_rev_list(plugin['directory'])
+            # Find the commits common between both repositories.
+            common_commits = [c for c in plugin_commits if c in misc_commits]
+            # Report the most recent common commit (i.e. the version
+            # of vim-misc merged into the plug-in's repository).
+            self.logger.info("%s: %s", common_commits[-1], plugin['name'])
+
+    def git_rev_list(self, cwd):
+        """
+        Find the ids of all commits in the git repository in the given
+        directory (returned as a list of strings, in chronological order).
+        """
+        return run('git', 'rev-list', '--all', '--reverse', cwd=cwd).splitlines()
+
+    def merge_misc_scripts(self):
+        """
+        Merge the latest changes in the vim-misc repository into all of the Vim
+        plug-ins that use the miscellaneous scripts.
+        """
+        # Sanity check the state of all plug-in checkouts.
+        good_to_go = True
+        self.logger.info("Sanity checking plug-in checkouts before vim-misc merge ..")
+        for plugin in self.sorted_plugins:
+            self.logger.debug("Checking %s ..", plugin['directory'])
+            if not self.on_master_branch(plugin['name']):
+                self.logger.error("%s: Switch to the master branch before trying to merge vim-misc!", plugin['name'])
+                good_to_go = False
+            changes = self.find_uncommitted_changes(plugin['name'])
+            if changes:
+                self.logger.error("%s: Clean the working directory before trying to merge vim-misc!", plugin['name'])
+                self.logger.info("The following files contain uncommitted changes: %s", ", ".join(changes))
+                good_to_go = False
+        if not good_to_go:
+            self.logger.info("Terminating because of previously reported errors.")
+            sys.exit(1)
+        # Try to merge the latest changes into all plug-in repositories.
+        for plugin in self.sorted_plugins:
+            head_before = self.find_git_id(plugin['name'])
+            self.get_upstream_changes(plugin['name'])
+            if self.try_to_merge(plugin['name']):
+                self.force_version_bump(plugin['name'])
+            if not self.dry_run:
+                self.publish_release(plugin['name'])
+            if self.dry_run and False: # XXX Temporarily disabled.
+                # Abuse git's versioning to implement dry-run :-) (this way we
+                # get to test the complete code path without doing any harm).
+                run('git', 'reset', '--hard', head_before,
+                    cwd=self.plugins[plugin['name']]['directory'])
+            self.logger.info("%s: Finished merging miscellaneous scripts!", plugin['name'])
+        self.logger.info("Successfully finished merging miscellaneous scripts!")
+
+    def get_upstream_changes(self, plugin_name):
+        """
+        Fetch and merge the latest changes for repositories where other people
+        can push changes without me knowing about it. This makes sure I have
+        the latest version before I go around performing automatic merges and
+        other fancy stuff :-).
+        """
+        if plugin_name == 'tarmack/vim-python-ftplugin':
+            directory = self.plugins[plugin_name]['directory']
+            self.logger.info("Pulling upstream changes into %s ..", directory)
+            run('git', 'pull', cwd=directory)
+
+    def try_to_merge(self, plugin_name):
+        """
+        Try to perform a merge of the miscellaneous scripts into the named
+        plug-in's git repository.
+        """
+        # Perform an automatic merge without commit (if any changes are
+        # available). This will fail (i.e. exit with a nonzero exit code) if
+        # files outside autoload/xolox/misc were modified in the vim-misc
+        # repository but that's fine, we can ignore those changes.
+        self.logger.info("%s: Pulling and merging latest changes to miscellaneous scripts ..", plugin_name)
+        run('git', 'pull', '--no-commit', MISC_SCRIPTS_REPO, 'master',
+            cwd=self.plugins[plugin_name]['directory'],
+            check=False)
+        # Ignore changes to files outside the directory with miscellaneous scripts.
+        changes_were_merged = False
+        for filename in self.find_uncommitted_changes(plugin_name):
+            if filename.startswith('autoload/xolox/misc/'):
+                self.logger.info("Accepting changes to %s ..", filename)
+                changes_were_merged = True
+            else:
+                self.logger.warn("Ignoring changes to %s ..", filename)
+                run('git', 'checkout', '--ours', filename,
+                    cwd=self.plugins[plugin_name]['directory'])
+                run('git', 'add', filename,
+                    cwd=self.plugins[plugin_name]['directory'])
+        return changes_were_merged
+
+    def force_version_bump(self, plugin_name):
+        """
+        Force the operator to manually bump the version if anything was merged.
+        """
+        # Force a version bump if anything was merged.
+        self.logger.info("Please bump version for release (and don't forget xolox#misc#compat#check()) ..")
+        directory = self.plugins[plugin_name]['directory']
+        filename = self.plugins[plugin_name]['autoload-script']
+        pathname = os.path.join(directory, filename)
+        run('gvim', '-f', '--noplugin', pathname)
+        run('git', 'add', filename, cwd=directory)
+        # Make sure the xolox#misc#compat#check() version matches.
+        self.wait_until_compatible(plugin_name)
+        # Finish the commit started by "try_to_merge".
+        msg_file = os.path.join(directory, '.git', 'GITGUI_MSG')
+        with open(msg_file, 'w') as handle:
+          handle.write('Updated miscellaneous scripts')
+        self.logger.info("Please review the changes before we make them final ..")
+        run('git', 'gui', 'citool', cwd=directory)
+
+    def wait_until_compatible(self, plugin_name):
+        """
+        Force the operator to correct the xolox#misc#compat#check() version
+        before committing. Will retry until the version is correct.
+        """
+        self.logger.info("Checking compatibility of %s and miscellaneous scripts ..", plugin_name)
+        directory = self.plugins[plugin_name]['directory']
+        autoload_script = os.path.join(directory, self.plugins[plugin_name]['autoload-script'])
+        compat_script = os.path.join(directory, 'autoload', 'xolox', 'misc', 'compat.vim')
+        while True:
+            # Find the version of the miscellaneous scripts that the plug-in expects.
+            with open(autoload_script) as handle:
+                for lnum, line in enumerate(handle, start=1):
+                    match = re.match(r"^call xolox#misc#compat#check\('([^']+)', ([^,]+), (\d+)\)$", line)
+                    if match:
+                        expected_version = int(match.group(3))
+                        self.logger.debug("Found expected version %i on line %i of %s", expected_version, lnum, autoload_script)
+                        break
+                else:
+                    raise Exception, "Failed to match expected version of miscellaneous scripts!"
+            # Find the version of the miscellaneous scripts merged into the plug-in repository.
+            with open(compat_script) as handle:
+                for lnum, line in enumerate(handle, start=1):
+                    match = re.match(r"^let g:xolox#misc#compat#version = (\d+)$", line)
+                    if match:
+                        embedded_version = int(match.group(1))
+                        self.logger.debug("Found embedded version %i on line %i of %s", expected_version, lnum, compat_script)
+                        break
+                else:
+                    raise Exception, "Failed to match embedded version of miscellaneous scripts!"
+            if expected_version == embedded_version:
+                break
+            else:
+                self.logger.warn("The expected vs. embedded miscellaneous scripts versions don't match!")
+                self.logger.info("Please resolve the problem and press ENTER ..")
+                sys.stdin.readline()
+
+    def find_git_id(self, plugin_name, rev='HEAD'):
+        """
+        Find the ID of the HEAD commit in the git repository of the named
+        Vim plug-in.
+        """
+        directory = self.plugins[plugin_name]['directory']
+        return run('git', 'rev-parse', rev, cwd=directory)
+
     ## Miscellaneous methods.
 
     @property
     def sorted_plugins(self):
+        """
+        List of Vim plug-in objects (dictionaries) sorted by lowercase plug-in name.
+        """
         def sort_key(plugin):
-            user, repository = plugin['name'].split('/')
+            user, repository = plugin['name'].split('/', 1)
             return repository.lower()
         return sorted(self.plugins.values(), key=sort_key)
 
     def find_current_plugin(self):
         """
-        Find the name of the "current" plug-in based on the git repository in
-        the current working directory or any of the parent directories (which
-        is how git usually works).
+        Find the name of the "current" plug-in based on the current working
+        directory.
         """
-        self.logger.debug("Finding current plug-in using 'git config --get remote.origin.url' ..")
-        remote_origin_url = run('git', 'config', '--get', 'remote.origin.url')
-        self.logger.debug("Raw output: %r", remote_origin_url)
-        pattern_match = re.match(r'^git@github\.com:(.+?)\.git$', remote_origin_url)
-        if not pattern_match:
-            msg = "Failed to parse remote origin URL! (%r)"
-            raise Exception, msg % remote_origin_url
-        plugin_name = pattern_match.group(1)
-        self.logger.info("Found current plug-in: %s", plugin_name)
-        if plugin_name not in self.plugins:
-            msg = "The repository %r doesn't contain a known Vim plug-in!"
-            raise Exception, msg % plugin_name
-        return plugin_name
+        self.logger.debug("Finding current plug-in based on current working directory ..")
+        current_directory = os.path.realpath('.')
+        for plugin_name, info in self.plugins.iteritems():
+            directory = os.path.realpath(info['directory'])
+            if current_directory.startswith(directory):
+                self.logger.info("Found current plug-in: %s", plugin_name)
+                return plugin_name
+        msg = "The directory %r doesn't contain a known Vim plug-in!"
+        raise Exception, msg % current_directory
 
-    def on_master_branch(self):
+    def on_master_branch(self, plugin_name):
         """
-        Check if the master branch is currently checked out.
+        Check if the master branch of the git repository of the given Vim
+        plug-in is currently checked out.
         """
-        output = run('git', 'symbolic-ref', 'HEAD')
+        output = run('git', 'symbolic-ref', 'HEAD',
+                     cwd=self.plugins[plugin_name]['directory'])
         tokens = output.split('/')
         return tokens[-1] == 'master'
+
+    def find_uncommitted_changes(self, plugin_name):
+        """
+        Find the uncommitted changes (if any) in the git repository of the
+        given Vim plug-in.
+        """
+        changed_files = []
+        output = run('git', 'status', '--porcelain', '--untracked-files=no',
+                     cwd=self.plugins[plugin_name]['directory'])
+        for line in output.splitlines():
+            status, filename = line.split(None, 1)
+            changed_files.append(filename)
+        return changed_files
 
     def find_version_on_vim_online(self, plugin_name):
         """
@@ -548,7 +768,8 @@ class VimPluginManager:
         version_definition = 'let g:%s#version' % autoload_path.replace('/', '#')
         self.logger.debug("Finding local committed version by scanning %s for %r ..", autoload_script, version_definition)
         # Ignore uncommitted changes in the auto-load script.
-        script_contents = run('git', 'show', 'HEAD:%s' % autoload_script)
+        script_contents = run('git', 'show', 'HEAD:%s' % autoload_script,
+                              cwd=self.plugins[plugin_name]['directory'])
         # Look for the version definition.
         for line in script_contents.splitlines():
             if line.startswith(version_definition):
@@ -571,16 +792,17 @@ class ExternalCommandFailed(Exception):
         super(ExternalCommandFailed, self).__init__(msg)
         self.command = command
 
-def run(*command):
+def run(*args, **kw):
     """
     Run an external process, make sure it exited with a zero return code and
     return the standard output stripped from leading/trailing whitespace.
     """
-    process = subprocess.Popen(command, stdout=subprocess.PIPE)
+    cwd = os.path.abspath(kw.get('cwd', '.'))
+    process = subprocess.Popen(args, stdout=subprocess.PIPE, cwd=cwd)
     stdout, stderr = process.communicate()
-    if process.returncode != 0:
-        msg = "External command %r exited with code %i"
-        raise ExternalCommandFailed(msg % (command, process.returncode), command)
+    if kw.get('check', True) and process.returncode != 0:
+        msg = "External command %r exited with code %i (working directory: %s)"
+        raise ExternalCommandFailed(msg % (args, process.returncode, cwd), args)
     return stdout.strip()
 
 def cp1252_to_utf8(text):
