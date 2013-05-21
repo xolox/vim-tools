@@ -589,13 +589,11 @@ class VimPluginManager:
             self.logger.debug("Not on master branch: skipping release tag.")
             return
         version = self.find_version_in_repository(plugin_name)
-        directory = self.plugins[plugin_name]['directory']
-        existing_tags = run('git', 'tag', cwd=directory, capture=True).split()
-        if version in existing_tags:
+        if version in self.find_releases(plugin_name):
             self.logger.debug("Tag %s already exists ..", version)
         else:
             self.logger.info("Creating tag for version %s ..", version)
-            run('git', 'tag', version, cwd=directory)
+            run('git', 'tag', version, cwd=self.plugins[plugin_name]['directory'])
 
     ## Dependency isolation.
 
@@ -613,8 +611,15 @@ class VimPluginManager:
 
         # Skip dependency isolation for commits that are not on 'dev' branch.
         if self.current_branch(plugin_name) != 'dev':
-            self.logger.info("Not on 'dev' branch: skipping dependency isolation.")
+            self.logger.info("Not on 'dev' branch; skipping dependency isolation.")
             return
+
+        # Skip dependency isolation when the version wasn't bumped.
+        version = self.find_version_in_repository(plugin_name)
+        if version in self.find_releases(plugin_name):
+            self.logger.info("Version %s was previously released; skipping dependency isolation.", version)
+            return
+
         self.logger.info("Starting dependency isolation of plug-in: %s", plugin_name)
 
         # Skip dependency isolation when the working directory isn't clean.
@@ -783,6 +788,13 @@ class VimPluginManager:
         branch_name = tokens[-1]
         self.logger.verbose("Current branch: %s", branch_name)
         return branch_name
+
+    def find_releases(self, plugin_name):
+        """
+        Find all tags in the git repository of the given Vim plug-in.
+        """
+        directory = self.plugins[plugin_name]['directory']
+        return run('git', 'tag', cwd=directory, capture=True).split()
 
     def find_uncommitted_changes(self, plugin_name):
         """
