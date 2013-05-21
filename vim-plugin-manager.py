@@ -25,6 +25,7 @@ Supported options:
   -p, --pre-commit     run shared pre-commit hooks
   -P, --post-commit    run shared post-commit hooks
   -r, --release        release to GitHub [and Vim Online]
+  -c, --changes        summarize uncommitted changes
   -v, --verbose        make more noise
   -h, --help           show this message and exit
 """
@@ -68,9 +69,9 @@ def main():
 
     # Parse the command line arguments.
     try:
-        options, arguments = getopt.getopt(sys.argv[1:], 'nipPrvh',
+        options, arguments = getopt.getopt(sys.argv[1:], 'nipPrcvh',
                 ['dry-run', 'install', 'pre-commit', 'post-commit', 'release',
-                    'verbose', 'help'])
+                    'changes' 'verbose', 'help'])
     except Exception, e:
         sys.stderr.write("Error: %s\n\n" % e)
         usage()
@@ -83,6 +84,7 @@ def main():
     pre_commit = False
     post_commit = False
     release = False
+    changes = False
 
     # Map options to variables.
     for option, value in options:
@@ -96,6 +98,8 @@ def main():
             post_commit = True
         elif option in ('-r', '--release'):
             release = True
+        elif option in ('-c', '--changes'):
+            changes = True
         elif option in ('-v', '--verbose'):
             verbosity += 1
         elif option in ('-h', '--help'):
@@ -104,7 +108,7 @@ def main():
         else:
             assert False, "Unhandled option!"
 
-    if not (install or pre_commit or post_commit or release):
+    if not (install or pre_commit or post_commit or release or changes):
         usage()
     else:
         # Initialize the Vim plug-in manager with the selected options.
@@ -118,6 +122,8 @@ def main():
             manager.run_postcommit_hooks()
         if release:
             manager.publish_release(manager.find_current_plugin())
+        if changes:
+            manager.summarize_uncommitted_changes()
 
 def usage():
     sys.stdout.write("%s\n" % __doc__.strip())
@@ -196,6 +202,45 @@ class VimPluginManager:
                 raise Exception, msg % directory
             items['directory'] = directory
             self.plugins[plugin_name] = items
+
+    ## Management of uncommitted changes.
+
+    def summarize_uncommitted_changes(self):
+        """
+        Generate a summary of the uncommitted changes in the git repositories
+        of my Vim plug-ins. Sometimes I get into a refactoring spree with
+        changes in several plug-ins going on at the same time; this makes it
+        easier to keep track of what's going on.
+
+        In case anyone is curious: The overview is in the format of my
+        vim-notes plug-in (I love it when I can integrate my tooling :-)
+        """
+        output = ["Uncommitted changes to Vim plug-ins"]
+        for plugin in self.sorted_plugins:
+            branch_name = self.current_branch(plugin['name'])
+            uncommitted_changes = self.find_uncommitted_changes(plugin['name'])
+            if uncommitted_changes:
+                num_files_changed = len(uncommitted_changes)
+                output.append("# %s (%s)" % (plugin['name'].split('/')[-1],
+                                             "%i file%s with changes" % (num_files_changed, '' if num_files_changed == 1 else 's')))
+                output.append("On branch: %s" % branch_name)
+                if len(uncommitted_changes) == 1:
+                    output.append("The following file has uncommitted changes:")
+                else:
+                    output.append("The following files have uncommitted changes:")
+                changed_files = []
+                for filename in uncommitted_changes:
+                    pathname = os.path.join(plugin['directory'], filename)
+                    changed_files.append(" • %s" % pathname.replace(os.environ['HOME'], '~'))
+                output.append("\n".join(changed_files))
+                output.append("Differences from HEAD:")
+                output.append("{{{diff\n%s\n}}}" % run('git', 'diff', 'HEAD', cwd=plugin['directory'], capture=True))
+        if len(output) == 1:
+            self.logger.info("No uncommitted changes found :-)")
+        else:
+            summary = "\n\n".join(output)
+            vim_commands = ['set bg=light ft=notes ro noma nomod', 'colorscheme earendel_diff', 'let &titlestring = getline(1)']
+            run('gvim', '-c', ' | '.join(vim_commands), '-', input=summary)
 
     ## Release management.
 
@@ -532,7 +577,7 @@ class VimPluginManager:
         """
         Automatically tag releases.
         """
-        if not self.on_branch(plugin_name, 'master'):
+        if self.current_branch(plugin_name) != 'master':
             self.logger.debug("Not on master branch: skipping release tag.")
             return
         version = self.find_version_in_repository(plugin_name)
@@ -557,7 +602,7 @@ class VimPluginManager:
            isolated name space for miscellaneous scripts.
         """
         # Skip dependency isolation for commits that are not on 'dev' branch.
-        if not self.on_branch(plugin_name, 'dev'):
+        if self.current_branch(plugin_name) != 'dev':
             self.logger.info("Not on 'dev' branch: skipping dependency isolation.")
             return
         self.logger.info("Starting dependency isolation of plug-in: %s", plugin_name)
@@ -565,7 +610,7 @@ class VimPluginManager:
         changes = self.find_uncommitted_changes(plugin_name)
         if changes:
             self.logger.error("%s: Please clean the working directory before running 'vim-plugin-manager -P' to perform dependency isolation!", plugin_name)
-            self.logger.info("The following files contain uncommitted changes: %s", ", ".join(sorted(changes)))
+            self.logger.info("The following files contain uncommitted changes: %s", ", ".join(changes))
             sys.exit(1)
         directory = self.plugins[plugin_name]['directory']
         # Determine the name space for auto-load scripts.
@@ -687,16 +732,18 @@ class VimPluginManager:
         msg = "The directory %r doesn't contain a known Vim plug-in!"
         raise Exception, msg % current_directory
 
-    def on_branch(self, plugin_name, branch_name):
+    def current_branch(self, plugin_name):
         """
-        Check if the given branch is currently checked out in the git
-        repository of the given Vim plug-in.
+        Find the name of the currently checked out branch in the git repository
+        of the given Vim plug-in.
         """
-        self.logger.verbose("Checking whether '%s' branch is checked out ..", branch_name)
         output = run('git', 'symbolic-ref', 'HEAD',
-                     cwd=self.plugins[plugin_name]['directory'])
+                     cwd=self.plugins[plugin_name]['directory'],
+                     capture=True)
         tokens = output.split('/')
-        return tokens[-1] == branch_name
+        branch_name = tokens[-1]
+        self.logger.verbose("Current branch: %s", branch_name)
+        return branch_name
 
     def find_uncommitted_changes(self, plugin_name):
         """
@@ -714,7 +761,7 @@ class VimPluginManager:
             if len(names) == 2:
                 filename = names[1]
             changed_files.append(filename)
-        return changed_files
+        return sorted(changed_files)
 
     def find_version_in_repository(self, plugin_name, branch_name='dev'):
         """
