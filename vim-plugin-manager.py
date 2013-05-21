@@ -337,7 +337,8 @@ class VimPluginManager:
         items = []
         repo_url = 'http://github.com/%s' % plugin_name
         commit_log = run('git', 'log', '--pretty=oneline', '--abbrev-commit', commit_range,
-                         cwd=self.plugins[plugin_name]['directory'])
+                         cwd=self.plugins[plugin_name]['directory'],
+                         capture=True)
         for line in reversed(commit_log.splitlines()):
             commit_hash, commit_desc = line.split(None, 1)
             items.append(' \x95 %s:\n' % commit_desc.strip().rstrip(':') +
@@ -435,7 +436,7 @@ class VimPluginManager:
         """
         self.logger.debug("Checking for post-release hook ..")
         try:
-            pathname = run('which', 'after-vim-plugin-release')
+            pathname = run('which', 'after-vim-plugin-release', capture=True)
         except ExternalCommandFailed:
             # The hook is not installed.
             self.logger.debug("No post-release hook installed!")
@@ -479,8 +480,15 @@ class VimPluginManager:
         # (/home/*) and Mac OS X (/Users/*).
         relpath = os.path.relpath(__file__, repository)
         with open(hook_path, 'w') as handle:
-            handle.write('#!/bin/bash\n\n')
-            handle.write('exec %s --%s\n' % (relpath, hook_name))
+            handle.write(textwrap.dedent("""
+                #!/bin/bash
+
+                # Generated git {hook_name} hook.
+
+                if [ -z "$DISABLE_GIT_HOOKS" ]; then
+                  exec {relpath} --{hook_name}
+                fi
+            """).lstrip().format(relpath=relpath, hook_name=hook_name))
         os.chmod(hook_path, 0755)
 
     ## Pre-commit hooks.
@@ -510,8 +518,8 @@ class VimPluginManager:
             self.logger.warn("No initial commit yet, can't check .gitignore!")
             return
         # There is an initial commit: We can check the .gitignore file!
-        if ('doc/tags' not in run('git', 'show', 'HEAD:.gitignore', cwd=directory).splitlines() and
-                '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore', cwd=directory).splitlines()):
+        if ('doc/tags' not in run('git', 'show', 'HEAD:.gitignore', cwd=directory, capture=True).splitlines() and
+                '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore', cwd=directory, capture=True).splitlines()):
             self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
             sys.exit(1)
 
@@ -582,7 +590,7 @@ class VimPluginManager:
             return
         version = self.find_version_in_repository(plugin_name)
         directory = self.plugins[plugin_name]['directory']
-        existing_tags = run('git', 'tag', cwd=directory).split()
+        existing_tags = run('git', 'tag', cwd=directory, capture=True).split()
         if version in existing_tags:
             self.logger.debug("Tag %s already exists ..", version)
         else:
@@ -598,14 +606,17 @@ class VimPluginManager:
 
         1. The auto-load name space of the miscellaneous scripts is adjusted so
            that the scripts are isolated to the plug-in;
+
         2. The source code of the plug-in's scripts is updated to reflect the
            isolated name space for miscellaneous scripts.
         """
+
         # Skip dependency isolation for commits that are not on 'dev' branch.
         if self.current_branch(plugin_name) != 'dev':
             self.logger.info("Not on 'dev' branch: skipping dependency isolation.")
             return
         self.logger.info("Starting dependency isolation of plug-in: %s", plugin_name)
+
         # Skip dependency isolation when the working directory isn't clean.
         changes = self.find_uncommitted_changes(plugin_name)
         if changes:
@@ -613,46 +624,82 @@ class VimPluginManager:
             self.logger.info("The following files contain uncommitted changes: %s", ", ".join(changes))
             sys.exit(1)
         directory = self.plugins[plugin_name]['directory']
+
         # Determine the name space for auto-load scripts.
         fs_namespace = self.find_autoload_namespace(plugin_name)
         vim_namespace = fs_namespace.replace('/', '#')
+
+        # Cleanup old miscellaneous scripts on the 'dev' branch.
+        if self.cleanup_old_misc_scripts(plugin_name):
+            os.environ['DISABLE_GIT_HOOKS'] = 'yes'
+            run('git', 'commit', '-m', "Cleaned up old miscellaneous scripts", cwd=directory)
+            del os.environ['DISABLE_GIT_HOOKS']
+
+        # Keep the source code of the isolated scripts in memory so we can
+        # reliably switch branches without caring about conflicting changes.
+        isolated_scripts = {}
+
         # Isolate the plug-in's Vim scripts.
         for filename in sorted(self.find_vim_scripts(directory)):
-            if '/misc/' not in filename:
-                self.isolate_script(filename, filename, vim_namespace)
-                run('git', 'add', filename, cwd=directory)
-        # Remove any non-isolated miscellaneous scripts from before I started
-        # using this Python script to manage my Vim plug-ins.
-        # TODO This code can be removed once I've converted all my plug-ins.
-        old_misc_directory = os.path.join(directory, 'autoload', 'xolox', 'misc')
-        if os.path.isdir(old_misc_directory):
-            self.logger.warn("Deleting old miscellaneous scripts: %s", old_misc_directory)
-            shutil.rmtree(old_misc_directory)
-            run('git', 'rm', '-r', old_misc_directory, cwd=directory)
+            isolated_scripts[filename] = self.isolate_script(filename, vim_namespace)
+
         # Copy the latest miscellaneous scripts to the plug-in and isolate them
         # in the process.
         real_misc_directory = os.path.join(MISC_SCRIPTS_REPO, 'autoload', 'xolox', 'misc')
         isolated_misc_directory = os.path.join(directory, 'autoload', fs_namespace, 'misc')
-        for pathname in self.find_vim_scripts(real_misc_directory):
-            filename = os.path.relpath(pathname, real_misc_directory)
-            isolated_script = os.path.join(isolated_misc_directory, filename)
-            self.isolate_script(pathname, isolated_script, vim_namespace)
-            run('git', 'add', isolated_script, cwd=directory)
-        # Switch to the master branch.
-        self.logger.info("Switching to master branch ..")
-        run('git', 'checkout', 'master')
-        # Propose a commit message.
+        for frompath in self.find_vim_scripts(real_misc_directory):
+            topath = os.path.join(isolated_misc_directory, os.path.relpath(frompath, real_misc_directory))
+            isolated_scripts[topath] = self.isolate_script(frompath, vim_namespace)
+
+        # Switch to the 'master' branch.
+        self.logger.info("Switching to 'master' branch ..")
+        run('git', 'checkout', '-f', 'master', cwd=directory)
+
+        # Merge the latest changes from the 'dev' branch into the 'master'
+        # branch. This is just a hint to git; any files that fail to merge
+        # automatically will be overwritten when we save the isolated scripts.
+        run('git', 'merge', '--no-commit', 'dev', cwd=directory, check=False)
+
+        # Cleanup old miscellaneous scripts (again, but now on the 'master' branch).
+        self.cleanup_old_misc_scripts(plugin_name)
+
+        # Save the isolated scripts to the working tree and index.
+        for pathname, contents in isolated_scripts.iteritems():
+            # Ensure that the target directory exists.
+            parent = os.path.dirname(pathname)
+            if not os.path.isdir(parent):
+                self.logger.debug("Creating directory: %s", parent)
+                os.makedirs(parent)
+            # Write the modified Vim script source code to disk.
+            self.logger.info("Writing script: %s", pathname)
+            with open(pathname, 'w') as handle:
+                handle.write(contents)
+            run('git', 'add', os.path.relpath(pathname, directory), cwd=directory)
+
+        # Commit the changes on the 'master' branch.
         committed_version = self.find_version_in_repository(plugin_name)
-        commit_message = "Release of version %s" % committed_version
-        message_file = os.path.join(directory, '.git', 'GITGUI_MSG')
-        with open(message_file, 'w') as handle:
-            handle.write(commit_message)
-        self.logger.info("Please review the changes before we commit them ..")
-        try:
-            run('git', 'gui', 'citool', cwd=directory)
-        except ExternalCommandFailed:
-            self.logger.error("%s: Commit aborted!", plugin_name)
-            sys.exit(1)
+        commit_message = "Release %s" % committed_version
+        self.logger.info("Committing changes with message: %s", commit_message)
+        run('git', 'commit', '-m', commit_message, cwd=directory)
+
+        # Switch back to the 'dev' branch.
+        self.logger.info("Switching to 'dev' branch ..")
+        run('git', 'checkout', '-f', 'dev', cwd=directory)
+
+    def cleanup_old_misc_scripts(self, plugin_name):
+        """
+        Remove any non-isolated miscellaneous scripts from before I started
+        using this Python script to manage my Vim plug-ins.
+        """
+        # TODO This code can be removed once I've converted all my plug-ins.
+        directory = self.plugins[plugin_name]['directory']
+        old_misc_directory = os.path.join(directory, 'autoload', 'xolox', 'misc')
+        if os.path.isdir(old_misc_directory):
+            self.logger.warn("Deleting old miscellaneous scripts: %s", old_misc_directory)
+            run('git', 'rm', '-qr', old_misc_directory, cwd=directory)
+            if os.path.isdir(old_misc_directory):
+                shutil.rmtree(old_misc_directory)
+            return True
 
     def find_autoload_namespace(self, plugin_name):
         """
@@ -675,7 +722,7 @@ class VimPluginManager:
                     self.logger.debug("Found Vim script: %s", pathname)
                     yield pathname
 
-    def isolate_script(self, frompath, topath, namespace):
+    def isolate_script(self, frompath, namespace):
         """
         Rewrite calls to miscellaneous auto-load functions in the source code
         of a Vim script.
@@ -686,24 +733,16 @@ class VimPluginManager:
             sources = handle.read()
         # Modify all calls to miscellaneous auto-load functions.
         sources = re.sub('xolox#misc#', '%s#misc#' % namespace, sources)
-        # Ensure that the target directory exists.
-        directory = os.path.dirname(topath)
-        if not os.path.isdir(directory):
-            self.logger.debug("Creating directory: %s", directory)
-            os.makedirs(directory)
-        # Write the modified Vim script source code to disk.
-        self.logger.info("Writing modified script: %s", topath)
-        with open(topath, 'w') as handle:
-            preamble = " ".join("""
-                This Vim script was modified by a Python script that I use to
-                manage the inclusion of miscellaneous functions in the plug-ins
-                that I publish to Vim Online and GitHub. Please don't edit this
-                file, instead make your changes on the 'dev' branch of the git
-                repository (thanks!). This file was generated on {date}.
-            """.split()).format(date=time.strftime('%B %d, %Y at %H:%M'))
-            for line in textwrap.wrap(preamble, 77):
-                handle.write('" %s\n' % line.strip())
-            handle.write('\n' + sources)
+        # Add a preamble warning unsuspecting bystanders not to edit generated files :-)
+        preamble = " ".join("""
+            This Vim script was modified by a Python script that I use to
+            manage the inclusion of miscellaneous functions in the plug-ins
+            that I publish to Vim Online and GitHub. Please don't edit this
+            file, instead make your changes on the 'dev' branch of the git
+            repository (thanks!). This file was generated on {date}.
+        """.split()).format(date=time.strftime('%B %d, %Y at %H:%M'))
+        wrapped_preamble = "\n".join('" %s' % line for line in textwrap.wrap(preamble, 77))
+        return wrapped_preamble + "\n\n" + sources
 
     ## Miscellaneous methods.
 
@@ -753,7 +792,7 @@ class VimPluginManager:
         changed_files = []
         directory = self.plugins[plugin_name]['directory']
         self.logger.verbose("Looking for uncommitted changes in git repository: %s", directory)
-        output = run('git', 'status', '--porcelain', '--untracked-files=no', cwd=directory)
+        output = run('git', 'status', '--porcelain', '--untracked-files=no', cwd=directory, capture=True)
         for line in output.splitlines():
             status, filename = line.split(None, 1)
             # Deal with renamed files.
@@ -778,7 +817,8 @@ class VimPluginManager:
         self.logger.debug("Finding local committed version by scanning %s for %r ..", autoload_script, version_definition)
         # Ignore uncommitted changes in the auto-load script.
         script_contents = run('git', 'show', '%s:%s' % (branch_name, autoload_script),
-                              cwd=self.plugins[plugin_name]['directory'])
+                              cwd=self.plugins[plugin_name]['directory'],
+                              capture=True)
         # Look for the version definition.
         for line in script_contents.splitlines():
             if line.startswith(version_definition):
@@ -830,13 +870,19 @@ def run(*args, **kw):
     Run an external process, make sure it exited with a zero return code and
     return the standard output stripped from leading/trailing whitespace.
     """
-    cwd = os.path.abspath(kw.get('cwd', '.'))
-    process = subprocess.Popen(args, stdout=subprocess.PIPE, cwd=cwd)
-    stdout, stderr = process.communicate()
+    # Prepare keyword arguments for subprocess.Popen().
+    context = dict(cwd=os.path.abspath(kw.get('cwd', '.')))
+    if 'input' in kw:
+        context['stdin'] = subprocess.PIPE
+    if kw.get('capture', False):
+        context['stdout'] = subprocess.PIPE
+    process = subprocess.Popen(args, **context)
+    stdout, stderr = process.communicate(input=kw.get('input', None))
     if kw.get('check', True) and process.returncode != 0:
         msg = "External command %r exited with code %i (working directory: %s)"
-        raise ExternalCommandFailed(msg % (args, process.returncode, cwd), args)
-    return stdout.strip()
+        raise ExternalCommandFailed(msg % (args, process.returncode, context['cwd']), args)
+    if hasattr(stdout, 'strip'):
+        return stdout.strip()
 
 def cp1252_to_utf8(text):
     """
