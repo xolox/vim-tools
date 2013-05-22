@@ -147,30 +147,56 @@ class Converter(object):
 class Node(object):
 
     def __init__(self, **kw):
+        """
+        Short term hack for prototyping :-).
+        """
         for name, value in kw.iteritems():
             setattr(self, name, value)
 
     def __repr__(self):
+        """
+        Dumb but useful representation of parse tree for debugging purposes.
+        """
         children = ", ".join(repr(c) for c in self.contents)
         return "%s(%s)" % (self.__class__.__name__, children)
 
-    def indent(self, text, level):
-        if isinstance(text, list):
-            text = "\n".join(text)
-        prefix = " " * (level * SHIFT_WIDTH)
-        return "\n".join(prefix + line for line in text.splitlines())
+    def join_explicit(self, other, delimiter):
+        """
+        Generic implementation of node joining that requires delimiter to be
+        specified.
+        """
+        self = self.render()
+        other = other.render()
+        if self and other:
+            return self + delimiter + other
+        else:
+            return self or other or ""
 
 class BlockLevelNode(Node):
-    pass
+
+    def join(self, other):
+        """
+        For now, block level elements simply assume they are only joined to
+        other block level elements.
+        """
+        return self.join_explicit(other, "\n\n")
 
 class InlineNode(Node):
-    pass
+
+    def join(self, other):
+        """
+        Inline elements assume they are only joined to other inline elements.
+        """
+        return self.join_explicit(other, " ")
 
 # Concrete parse tree nodes.
 
 class BlockLevelSequence(BlockLevelNode):
 
     def __iter__(self):
+        """
+        Quick hack to make it easier to walk the tree.
+        """
         return iter(self.contents)
 
     def render(self, level):
