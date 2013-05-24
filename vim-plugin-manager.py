@@ -38,7 +38,6 @@ import logging
 import netrc
 import os
 import re
-import shutil
 import subprocess
 import sys
 import textwrap
@@ -57,9 +56,6 @@ import coloredlogs
 
 # External dependency bundled with the Vim plug-in manager.
 import html2vimdoc
-
-# Configuration defaults.
-MISC_SCRIPTS_REPO = os.path.expanduser('~/Dropbox/Projects/Vim/0-misc')
 
 def main():
 
@@ -577,9 +573,7 @@ class VimPluginManager:
         Automatic plug-in/repository maintenance just after a commit is made.
         """
         self.logger.info("Running post-commit hooks ..")
-        plugin_name = self.find_current_plugin()
-        self.isolate_dependencies(plugin_name)
-        self.tag_release(plugin_name)
+        self.tag_release(self.find_current_plugin())
 
     def tag_release(self, plugin_name):
         """
@@ -594,160 +588,6 @@ class VimPluginManager:
         else:
             self.logger.info("Creating tag for version %s ..", version)
             run('git', 'tag', version, cwd=self.plugins[plugin_name]['directory'])
-
-    ## Dependency isolation.
-
-    def isolate_dependencies(self, plugin_name):
-        """
-        Embed the latest miscellaneous scripts into the Vim plug-in's master
-        branch:
-
-        1. The auto-load name space of the miscellaneous scripts is adjusted so
-           that the scripts are isolated to the plug-in;
-
-        2. The source code of the plug-in's scripts is updated to reflect the
-           isolated name space for miscellaneous scripts.
-        """
-
-        # Skip dependency isolation for commits that are not on 'dev' branch.
-        if self.current_branch(plugin_name) != 'dev':
-            self.logger.info("Not on 'dev' branch; skipping dependency isolation.")
-            return
-
-        # Skip dependency isolation when the version wasn't bumped.
-        version = self.find_version_in_repository(plugin_name)
-        if version in self.find_releases(plugin_name):
-            self.logger.info("Version %s was previously released; skipping dependency isolation.", version)
-            return
-
-        self.logger.info("Starting dependency isolation of plug-in: %s", plugin_name)
-
-        # Skip dependency isolation when the working directory isn't clean.
-        changes = self.find_uncommitted_changes(plugin_name)
-        if changes:
-            self.logger.error("%s: Please clean the working directory before running 'vim-plugin-manager -P' to perform dependency isolation!", plugin_name)
-            self.logger.info("The following files contain uncommitted changes: %s", ", ".join(changes))
-            sys.exit(1)
-        directory = self.plugins[plugin_name]['directory']
-
-        # Determine the name space for auto-load scripts.
-        fs_namespace = self.find_autoload_namespace(plugin_name)
-        vim_namespace = fs_namespace.replace('/', '#')
-
-        # Cleanup old miscellaneous scripts on the 'dev' branch.
-        if self.cleanup_old_misc_scripts(plugin_name):
-            os.environ['DISABLE_GIT_HOOKS'] = 'yes'
-            run('git', 'commit', '-m', "Cleaned up old miscellaneous scripts", cwd=directory)
-            del os.environ['DISABLE_GIT_HOOKS']
-
-        # Keep the source code of the isolated scripts in memory so we can
-        # reliably switch branches without caring about conflicting changes.
-        isolated_scripts = {}
-
-        # Isolate the plug-in's Vim scripts.
-        for filename in sorted(self.find_vim_scripts(directory)):
-            isolated_scripts[filename] = self.isolate_script(filename, vim_namespace)
-
-        # Copy the latest miscellaneous scripts to the plug-in and isolate them
-        # in the process.
-        real_misc_directory = os.path.join(MISC_SCRIPTS_REPO, 'autoload', 'xolox', 'misc')
-        isolated_misc_directory = os.path.join(directory, 'autoload', fs_namespace, 'misc')
-        for frompath in self.find_vim_scripts(real_misc_directory):
-            topath = os.path.join(isolated_misc_directory, os.path.relpath(frompath, real_misc_directory))
-            isolated_scripts[topath] = self.isolate_script(frompath, vim_namespace)
-
-        # Switch to the 'master' branch.
-        self.logger.info("Switching to 'master' branch ..")
-        run('git', 'checkout', '-f', 'master', cwd=directory)
-
-        # Merge the latest changes from the 'dev' branch into the 'master'
-        # branch. This is just a hint to git; any files that fail to merge
-        # automatically will be overwritten when we save the isolated scripts.
-        run('git', 'merge', '--no-commit', 'dev', cwd=directory, check=False)
-
-        # Cleanup old miscellaneous scripts (again, but now on the 'master' branch).
-        self.cleanup_old_misc_scripts(plugin_name)
-
-        # Save the isolated scripts to the working tree and index.
-        for pathname, contents in isolated_scripts.iteritems():
-            # Ensure that the target directory exists.
-            parent = os.path.dirname(pathname)
-            if not os.path.isdir(parent):
-                self.logger.debug("Creating directory: %s", parent)
-                os.makedirs(parent)
-            # Write the modified Vim script source code to disk.
-            self.logger.info("Writing script: %s", pathname)
-            with open(pathname, 'w') as handle:
-                handle.write(contents)
-            run('git', 'add', os.path.relpath(pathname, directory), cwd=directory)
-
-        # Commit the changes on the 'master' branch.
-        committed_version = self.find_version_in_repository(plugin_name)
-        commit_message = "Release %s" % committed_version
-        self.logger.info("Committing changes with message: %s", commit_message)
-        run('git', 'commit', '-m', commit_message, cwd=directory)
-
-        # Switch back to the 'dev' branch.
-        self.logger.info("Switching to 'dev' branch ..")
-        run('git', 'checkout', '-f', 'dev', cwd=directory)
-
-    def cleanup_old_misc_scripts(self, plugin_name):
-        """
-        Remove any non-isolated miscellaneous scripts from before I started
-        using this Python script to manage my Vim plug-ins.
-        """
-        # TODO This code can be removed once I've converted all my plug-ins.
-        directory = self.plugins[plugin_name]['directory']
-        old_misc_directory = os.path.join(directory, 'autoload', 'xolox', 'misc')
-        if os.path.isdir(old_misc_directory):
-            self.logger.warn("Deleting old miscellaneous scripts: %s", old_misc_directory)
-            run('git', 'rm', '-qr', old_misc_directory, cwd=directory)
-            if os.path.isdir(old_misc_directory):
-                shutil.rmtree(old_misc_directory)
-            return True
-
-    def find_autoload_namespace(self, plugin_name):
-        """
-        Find the auto-load name space of a Vim plug-in.
-        """
-        autoload_script = self.plugins[plugin_name]['autoload-script']
-        namespace = re.sub(r'^autoload/(.+)\.vim$', r'\1', autoload_script)
-        self.logger.debug("Auto-load name space of plug-in: %s (inferred from auto-load script)", namespace)
-        return namespace
-
-    def find_vim_scripts(self, directory):
-        """
-        Find all Vim scripts in or below the given directory.
-        """
-        self.logger.info("Scanning %s for Vim scripts ..", directory)
-        for root, dirs, files in os.walk(directory):
-            for filename in files:
-                if filename.endswith('.vim'):
-                    pathname = os.path.join(root, filename)
-                    self.logger.debug("Found Vim script: %s", pathname)
-                    yield pathname
-
-    def isolate_script(self, frompath, namespace):
-        """
-        Rewrite calls to miscellaneous auto-load functions in the source code
-        of a Vim script.
-        """
-        # Read the original Vim script source code from disk.
-        self.logger.debug("Reading script: %s", frompath)
-        with open(frompath) as handle:
-            sources = handle.read()
-        # Modify all calls to miscellaneous auto-load functions.
-        sources = re.sub('xolox#misc#', '%s#misc#' % namespace, sources)
-        # Add a preamble warning unsuspecting bystanders not to edit generated files :-)
-        preamble = " ".join("""
-            This Vim script was modified by a Python script that I use to
-            manage the inclusion of miscellaneous functions in the plug-ins
-            that I publish to Vim Online and GitHub. Please don't edit this
-            file, instead make your changes on the 'dev' branch of the git
-            repository (thanks!). This file was generated on {date}.
-        """.split()).format(date=time.strftime('%B %d, %Y at %H:%M'))
-        wrapped_preamble = "\n".join('" %s' % line for line in textwrap.wrap(preamble, 77))
-        return wrapped_preamble + "\n\n" + sources
 
     ## Miscellaneous methods.
 
