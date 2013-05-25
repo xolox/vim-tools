@@ -654,7 +654,7 @@ class VimPluginManager:
             changed_files.append(filename)
         return sorted(changed_files)
 
-    def find_version_in_repository(self, plugin_name, branch_name='dev'):
+    def find_version_in_repository(self, plugin_name, branch_name='master'):
         """
         Find the version of a Vim plug-in that is the highest version number
         that has been committed to the local git repository of the plug-in (the
