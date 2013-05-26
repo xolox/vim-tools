@@ -88,7 +88,7 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], model
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
     find_references(simple_tree)
-    vimdoc = simple_tree.render(level=0)
+    vimdoc = simple_tree.render(initial_indent='', subsequent_indent='')
     if modeline and not modeline.isspace():
         vimdoc += "\n\n" + modeline
     return vimdoc
@@ -332,8 +332,8 @@ class BlockLevelSequence(BlockLevelNode):
     A sequence of one or more block level nodes.
     """
 
-    def render(self, level):
-        return join_blocks(self.contents, level=level)
+    def render(self, **kw):
+        return join_blocks(self.contents, **kw)
 
 @html_element('h1', 'h2', 'h3', 'h4', 'h5', 'h6')
 class Heading(BlockLevelNode):
@@ -350,9 +350,9 @@ class Heading(BlockLevelNode):
         return Heading(level=int(html_node.name[1]),
                        contents=simplify_children(html_node))
 
-    def render(self, level):
+    def render(self, **kw):
         # Join the inline child nodes together into a single string.
-        text = join_inline(self.contents, level=level)
+        text = join_inline(self.contents, **kw)
         # Wrap the heading's text. The two character difference is " ~", the
         # suffix used to mark Vim help file headings.
         lines = [line + " ~" for line in textwrap.wrap(text, width=TEXT_WIDTH - 2)]
@@ -369,12 +369,8 @@ class Paragraph(BlockLevelNode):
     Maps to the HTML element ``<p>``.
     """
 
-    def render(self, level):
-        indent = " " * (level * SHIFT_WIDTH)
-        return "\n".join(textwrap.wrap(join_inline(self.contents, level=level),
-                                       width=TEXT_WIDTH,
-                                       initial_indent=indent,
-                                       subsequent_indent=indent))
+    def render(self, **kw):
+        return join_inline(self.contents, **kw)
 
 @html_element('pre')
 class PreformattedText(BlockLevelNode):
@@ -393,8 +389,7 @@ class PreformattedText(BlockLevelNode):
     def contents(self):
         return [self.text]
 
-    def render(self, level):
-        indent = " " * ((1 + level) * SHIFT_WIDTH)
+    def render(self, initial_indent, subsequent_indent):
         # Remove common indentation from the original text.
         text = textwrap.dedent(self.text)
         # Remove leading/trailing empty lines.
@@ -403,13 +398,13 @@ class PreformattedText(BlockLevelNode):
             lines.pop(0)
         while lines and not lines[-1].strip():
             lines.pop(-1)
+        # Add Vim help file markers indicating the preformatted text.
+        lines.insert(0, ">")
+        lines.append("<")
         # Indent the original text.
-        output = []
-        for line in lines:
-            output.append(indent + line)
-        # Add a Vim help file marker indicating the preformatted text.
-        output.insert(0, ">")
-        output.append("<")
+        output = [initial_indent + lines[0]]
+        for line in lines[1:]:
+            output.append(subsequent_indent + ' ' + line)
         return "\n".join(output)
 
 @html_element('ul', 'ol')
@@ -425,15 +420,18 @@ class List(BlockLevelNode):
         return List(ordered=(html_node.name=='ol'),
                     contents=simplify_children(html_node))
 
-    def render(self, level):
+    def render(self, initial_indent, subsequent_indent):
         items = []
         delimiter = '\n'
         for node in self.contents:
             if isinstance(node, ListItem):
-                indent = ' ' * (level * SHIFT_WIDTH)
-                bullet = '%i. ' % (len(items) + 1) if self.ordered else '- '
-                text = node.render(level=level + (len(bullet) / SHIFT_WIDTH))
-                items.append(indent + bullet + text.lstrip())
+                if self.ordered:
+                    this_initial_indent = initial_indent + '%i. ' % (len(items) + 1)
+                else:
+                    this_initial_indent = initial_indent + '- '
+                text = node.render(initial_indent=this_initial_indent,
+                                   subsequent_indent=' ' * len(this_initial_indent))
+                items.append(text)
                 if '\n' in text:
                     delimiter = '\n\n'
         return delimiter.join(items)
@@ -446,9 +444,9 @@ class ListItem(BlockLevelNode):
     Maps to the HTML element ``<li>``.
     """
 
-    def render(self, level):
+    def render(self, **kw):
         # XXX ListItem is kind of a special case? It's responsible for hard wrapping any direct inline children.
-        return join_smart(self.contents, level=level)
+        return join_smart(self.contents, **kw)
 
 @html_element('table')
 class Table(BlockLevelNode):
@@ -458,7 +456,7 @@ class Table(BlockLevelNode):
     Maps to the HTML element ``<table>``.
     """
 
-    def render(self, level):
+    def render(self, **kw):
         # TODO Parse and render tabular data.
         return ''
 
@@ -468,7 +466,7 @@ class Reference(BlockLevelNode):
     Block level node to represent a reference to a hyper link.
     """
 
-    def render(self, level):
+    def render(self, **kw):
         return "[%i] %s" % (self.number, self.target)
 
 class InlineSequence(InlineNode):
@@ -477,8 +475,8 @@ class InlineSequence(InlineNode):
     Inline node to represent a sequence of one or more inline nodes.
     """
 
-    def render(self, level):
-        return join_inline(self.contents, level=level)
+    def render(self, **kw):
+        return join_inline(self.contents, **kw)
 
 @html_element('a')
 class HyperLink(InlineNode):
@@ -493,7 +491,7 @@ class HyperLink(InlineNode):
         return HyperLink(text=''.join(html_node.findAll(text=True)),
                          target=html_node['href'])
 
-    def render(self, level):
+    def render(self, **kw):
         return "%s [%i]" % (self.text, self.reference.number)
 
 class Text(InlineNode):
@@ -506,7 +504,7 @@ class Text(InlineNode):
     def contents(self):
         return [self.text]
 
-    def render(self, level):
+    def render(self, **kw):
         return self.text
 
 def is_block_level(contents):
@@ -516,22 +514,22 @@ def is_block_level(contents):
     """
     return any(isinstance(n, BlockLevelNode) for n in contents)
 
-def join_smart(nodes, level):
+def join_smart(nodes, **kw):
     """
     Join a sequence of block level and/or inline nodes into a single string.
     """
     if is_block_level(nodes):
-        return join_blocks(nodes, level)
+        return join_blocks(nodes, **kw)
     else:
-        return join_inline(nodes, level)
+        return join_inline(nodes, **kw)
 
-def join_blocks(nodes, level):
+def join_blocks(nodes, **kw):
     """
     Join a sequence of block level nodes into a single string.
     """
     output = ''
     for node in nodes:
-        text = node.render(level=level)
+        text = node.render(**kw)
         if text and not text.isspace():
             if not output:
                 output = text
@@ -541,11 +539,14 @@ def join_blocks(nodes, level):
                 output += '\n\n' + text
     return output
 
-def join_inline(nodes, level):
+def join_inline(nodes, **kw):
     """
     Join a sequence of inline nodes into a single string.
     """
-    return compact("".join(n.render(level=level) for n in nodes))
+    return "\n".join(textwrap.wrap(compact("".join(n.render(**kw) for n in nodes)),
+                                   initial_indent=kw['initial_indent'],
+                                   subsequent_indent=kw['subsequent_indent'],
+                                   width=TEXT_WIDTH - 2))
 
 def compact(text):
     """
