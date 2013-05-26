@@ -420,6 +420,7 @@ class Table(BlockLevelNode):
     """
 
     def render(self, level):
+        # TODO Parse and render tabular data.
         return ''
 
 class InlineSequence(InlineNode):
@@ -430,6 +431,22 @@ class InlineSequence(InlineNode):
 
     def render(self, level):
         return join_inline(self.contents, level=level)
+
+@html_element('a')
+class Link(InlineNode):
+
+    """
+    Inline node to represent hyper links.
+    Maps to the HTML element ``<a>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return Link(text=''.join(html_node.findAll(text=True)),
+                    target=html_node['href'])
+
+    def render(self, level):
+        return "%s (%s)" % (self.text, self.target)
 
 class Text(InlineNode):
 
