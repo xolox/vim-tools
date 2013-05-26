@@ -424,11 +424,12 @@ class List(BlockLevelNode):
     def render(self, level):
         items = []
         delimiter = '\n'
-        for i, node in enumerate(self.contents, start=1):
+        for node in self.contents:
             if isinstance(node, ListItem):
-                bullet = '%i. ' % i if self.ordered else '- '
+                indent = ' ' * (level * SHIFT_WIDTH)
+                bullet = '%i. ' % (len(items) + 1) if self.ordered else '- '
                 text = node.render(level=level + (len(bullet) / SHIFT_WIDTH))
-                items.append(bullet + text.lstrip())
+                items.append(indent + bullet + text.lstrip())
                 if '\n' in text:
                     delimiter = '\n\n'
         return delimiter.join(items)
