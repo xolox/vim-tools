@@ -88,7 +88,7 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], model
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
     find_references(simple_tree)
-    vimdoc = simple_tree.render(initial_indent='', subsequent_indent='')
+    vimdoc = simple_tree.render(indent=0)
     if modeline and not modeline.isspace():
         vimdoc += "\n\n" + modeline
     return vimdoc
@@ -355,7 +355,10 @@ class Heading(BlockLevelNode):
         text = join_inline(self.contents, **kw)
         # Wrap the heading's text. The two character difference is " ~", the
         # suffix used to mark Vim help file headings.
-        lines = [line + " ~" for line in textwrap.wrap(text, width=TEXT_WIDTH - 2)]
+        prefix = ' ' * kw['indent']
+        suffix = ' ~'
+        width = TEXT_WIDTH - len(prefix) - len(suffix)
+        lines = [prefix + l + suffix for l in textwrap.wrap(text, width=width)]
         # Add a line with the marker symbol for headings, repeated on the full
         # line, at the top of the heading.
         lines.insert(0, ('=' if self.level == 1 else '-') * 79)
@@ -382,30 +385,33 @@ class PreformattedText(BlockLevelNode):
 
     @staticmethod
     def parse(html_node):
+        # This is the easiest way to get all of the text in the preformatted
+        # block while ignoring HTML elements (what would we do with them?).
         text = ''.join(html_node.findAll(text=True))
-        return PreformattedText(text=text)
-
-    @property
-    def contents(self):
-        return [self.text]
-
-    def render(self, initial_indent, subsequent_indent):
         # Remove common indentation from the original text.
-        text = textwrap.dedent(self.text)
+        text = textwrap.dedent(text)
         # Remove leading/trailing empty lines.
         lines = text.splitlines()
         while lines and not lines[0].strip():
             lines.pop(0)
         while lines and not lines[-1].strip():
             lines.pop(-1)
+        return PreformattedText(text="\n".join(lines))
+
+    @property
+    def contents(self):
+        return [self.text]
+
+    def render(self, **kw):
+        # Indent the original text.
+        lines = []
+        prefix = ' ' * kw['indent']
+        for line in self.text.splitlines():
+            lines.append(prefix + line)
         # Add Vim help file markers indicating the preformatted text.
         lines.insert(0, ">")
         lines.append("<")
-        # Indent the original text.
-        output = [initial_indent + lines[0]]
-        for line in lines[1:]:
-            output.append(subsequent_indent + ' ' + line)
-        return "\n".join(output)
+        return "\n".join(lines)
 
 @html_element('ul', 'ol')
 class List(BlockLevelNode):
@@ -417,20 +423,20 @@ class List(BlockLevelNode):
 
     @staticmethod
     def parse(html_node):
-        return List(ordered=(html_node.name=='ol'),
-                    contents=simplify_children(html_node))
+        children = simplify_children(html_node)
+        node = List(ordered=(html_node.name=='ol'),
+                    contents=children)
+        # Make it possible to get from the items (children) to the list (parent).
+        for child in children:
+            child.parent = node
+        return node
 
-    def render(self, initial_indent, subsequent_indent):
+    def render(self, **kw):
         items = []
         delimiter = '\n'
         for node in self.contents:
             if isinstance(node, ListItem):
-                if self.ordered:
-                    this_initial_indent = initial_indent + '%i. ' % (len(items) + 1)
-                else:
-                    this_initial_indent = initial_indent + '- '
-                text = node.render(initial_indent=this_initial_indent,
-                                   subsequent_indent=' ' * len(this_initial_indent))
+                text = node.render(number=len(items) + 1, **kw)
                 items.append(text)
                 if '\n' in text:
                     delimiter = '\n\n'
@@ -444,9 +450,23 @@ class ListItem(BlockLevelNode):
     Maps to the HTML element ``<li>``.
     """
 
-    def render(self, **kw):
-        # XXX ListItem is kind of a special case? It's responsible for hard wrapping any direct inline children.
-        return join_smart(self.contents, **kw)
+    def render(self, number, **kw):
+        # Get the original prefix (indent).
+        prefix = ' ' * kw['indent']
+        # Append the list item bullet.
+        if self.parent.ordered:
+            prefix += '%i. ' % number
+        else:
+            prefix += '- '
+        # Update indent for child nodes.
+        kw['indent'] = len(prefix)
+        # Render child nodes.
+        text = join_smart(self.contents, **kw)
+        # Prefix the list item bullet.
+        for i in xrange(len(prefix)):
+            if text and text[0].isspace():
+                text = text[1:]
+        return prefix + text
 
 @html_element('table')
 class Table(BlockLevelNode):
@@ -543,10 +563,15 @@ def join_inline(nodes, **kw):
     """
     Join a sequence of inline nodes into a single string.
     """
-    return "\n".join(textwrap.wrap(compact("".join(n.render(**kw) for n in nodes)),
-                                   initial_indent=kw['initial_indent'],
-                                   subsequent_indent=kw['subsequent_indent'],
-                                   width=TEXT_WIDTH - 2))
+    output = []
+    for i, node in enumerate(nodes):
+        output.append(node.render(**kw))
+    prefix = ' ' * kw['indent']
+    width = TEXT_WIDTH - len(prefix)
+    return "\n".join(textwrap.wrap(compact("".join(output)),
+                                   initial_indent=prefix,
+                                   subsequent_indent=prefix,
+                                   width=width))
 
 def compact(text):
     """
