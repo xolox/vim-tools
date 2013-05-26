@@ -75,15 +75,16 @@ def main():
     with open(filename) as handle:
         html = handle.read()
         html = re.sub(r'test coverage: \S+', '', html)
-        output = html2vimdoc(html, selectors_to_ignore=['h3 a[class=anchor]'])
+        output = html2vimdoc(html, filename='lpeg.txt', selectors_to_ignore=['h3 a[class=anchor]'])
         print output.encode('utf-8')
 
-def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
+def html2vimdoc(html, title='', filename='', content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
     """
     Convert HTML documents to the Vim help file format.
     """
     html = decode_hexadecimal_entities(html)
     tree = BeautifulSoup(html, convertEntities=BeautifulSoup.ALL_ENTITIES)
+    title = select_title(tree, title)
     ignore_given_selectors(tree, selectors_to_ignore)
     root = find_root_node(tree, content_selector)
     simple_tree = simplify_tree(root)
@@ -95,10 +96,27 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], model
     vimdoc = simple_tree.render(indent=0)
     output = list(flatten(vimdoc))
     deduplicate_delimiters(output)
+    # Render the final text.
     vimdoc = u"".join(unicode(v) for v in output)
+    # Add the first line with the file tag and/or document title?
+    if title or filename:
+        firstline = []
+        if filename:
+            firstline.append("*%s*" % filename)
+        if title:
+            firstline.append(title)
+        vimdoc = "%s\n\n%s" % ("  ".join(firstline), vimdoc)
+    # Add a mode line at the end of the document.
     if modeline and not modeline.isspace():
         vimdoc += "\n\n" + modeline
     return vimdoc
+
+def select_title(tree, title):
+    if not title:
+        elements = tree.findAll('title')
+        if elements:
+            title = ''.join(elements[0].findAll(text=True))
+    return title
 
 def deduplicate_delimiters(output):
     # Deduplicate redundant block delimiters from the rendered Vim help text.
