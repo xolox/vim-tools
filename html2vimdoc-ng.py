@@ -69,9 +69,9 @@ logger.addHandler(coloredlogs.ColoredStreamHandler())
 name_to_type_mapping = {}
 
 def main():
-    filename = 'demo/lpeg-0.10.html'
-    filename = 'demo/apr-0.17.html'
     filename = 'test.html'
+    filename = 'demo/apr-0.17.html'
+    filename = 'demo/lpeg-0.10.html'
     with open(filename) as handle:
         html = handle.read()
         html = re.sub(r'test coverage: \S+', '', html)
@@ -95,12 +95,13 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], model
     vimdoc = simple_tree.render(indent=0)
     output = list(flatten(vimdoc))
     deduplicate_delimiters(output)
-    vimdoc = "".join(str(v) for v in output)
+    vimdoc = u"".join(unicode(v) for v in output)
     if modeline and not modeline.isspace():
         vimdoc += "\n\n" + modeline
     return vimdoc
 
 def deduplicate_delimiters(output):
+    # Deduplicate redundant block delimiters from the rendered Vim help text.
     i = 0
     while i < len(output) - 1:
         if isinstance(output[i], OutputDelimiter) and isinstance(output[i + 1], OutputDelimiter):
@@ -120,10 +121,10 @@ def deduplicate_delimiters(output):
                 output.pop(i)
                 continue
         i += 1
-    # Strip leading output delimiters.
+    # Strip leading block delimiters.
     while output and isinstance(output[0], OutputDelimiter) and output[0].string.isspace():
         output.pop(0)
-    # Strip trailing output delimiters.
+    # Strip trailing block delimiters.
     while output and isinstance(output[-1], OutputDelimiter) and output[-1].string.isspace():
         output.pop(-1)
 
@@ -261,6 +262,8 @@ def find_references(root):
     by_reference = []
     logger.debug("Scanning parse tree for hyper links ..")
     for node in walk_tree(root, HyperLink):
+        if not node.target:
+            continue
         target = urllib.unquote(node.target)
         # Exclude relative URLs and literal URLs from list of references.
         if '://' not in target or target == node.text:
@@ -304,7 +307,7 @@ class OutputDelimiter(object):
     def __init__(self, string):
         self.string = string
 
-    def __str__(self):
+    def __unicode__(self):
         return self.string
 
     def __repr__(self):
@@ -464,7 +467,7 @@ class PreformattedText(BlockLevelNode):
         return [self.text]
 
     def render(self, **kw):
-        prefix = ' ' * kw['indent']
+        prefix = ' ' * max(kw['indent'], 2)
         text = "\n".join(prefix + l for l in self.text.splitlines())
         return [self.start_delimiter, text, self.end_delimiter]
 
@@ -588,13 +591,16 @@ class HyperLink(InlineNode):
     @staticmethod
     def parse(html_node):
         return HyperLink(text=''.join(html_node.findAll(text=True)),
-                         target=html_node['href'])
+                         target=html_node.get('href', ''))
 
     def __repr__(self):
-        return "HyperLink(text=%r, target=%r, reference=%r)" % (self.text, self.target, self.reference)
+        return "HyperLink(text=%r, target=%r, reference=%r)" % (self.text, self.target, getattr(self, 'reference', None))
 
     def render(self, **kw):
-        return "%s [%i]" % (self.text, self.reference.number)
+        if hasattr(self, 'reference'):
+            return "%s [%i]" % (self.text, self.reference.number)
+        else:
+            return self.text
 
 class Text(InlineNode):
 
