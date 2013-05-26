@@ -38,6 +38,7 @@ The ``html2vimdoc`` module works in three phases:
 """
 
 # Standard library modules.
+import collections
 import logging
 import re
 import textwrap
@@ -88,12 +89,43 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], model
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
     find_references(simple_tree)
+    # XXX Write the AST to disk (for debugging).
     with open('tree.py', 'w') as handle:
         handle.write("%r\n" % simple_tree)
     vimdoc = simple_tree.render(indent=0)
+    output = list(flatten(vimdoc))
+    deduplicate_delimiters(output)
+    vimdoc = "".join(str(v) for v in output)
     if modeline and not modeline.isspace():
         vimdoc += "\n\n" + modeline
     return vimdoc
+
+def deduplicate_delimiters(output):
+    i = 0
+    while i < len(output) - 1:
+        if isinstance(output[i], OutputDelimiter) and isinstance(output[i + 1], OutputDelimiter):
+            if output[i].string.isspace() and not output[i + 1].string.isspace():
+                output.pop(i)
+                continue
+            elif output[i + 1].string.isspace() and not output[i].string.isspace():
+                output.pop(i + 1)
+                continue
+            elif len(output[i].string) < len(output[i + 1].string):
+                output.pop(i)
+                continue
+            elif len(output[i].string) > len(output[i + 1].string):
+                output.pop(i + 1)
+                continue
+            elif output[i].string.isspace():
+                output.pop(i)
+                continue
+        i += 1
+    # Strip leading output delimiters.
+    while output and isinstance(output[0], OutputDelimiter) and output[0].string.isspace():
+        output.pop(0)
+    # Strip trailing output delimiters.
+    while output and isinstance(output[-1], OutputDelimiter) and output[-1].string.isspace():
+        output.pop(-1)
 
 def decode_hexadecimal_entities(html):
     """
@@ -265,7 +297,20 @@ def walk_tree(root, *node_types):
     recurse(root)
     return ordered_nodes
 
-# Decorators.
+# Objects to encapsulate output text with a bit of state.
+
+class OutputDelimiter(object):
+
+    def __init__(self, string):
+        self.string = string
+
+    def __str__(self):
+        return self.string
+
+    def __repr__(self):
+        return "OutputDelimiter(string=%r)" % self.string
+
+# Decorator for abstract syntax tree nodes.
 
 def html_element(*element_names):
     """
@@ -324,7 +369,8 @@ class BlockLevelNode(Node):
     are the nodes which take care of indentation and line wrapping by
     themselves.
     """
-    pass
+    start_delimiter = OutputDelimiter('\n\n')
+    end_delimiter = OutputDelimiter('\n\n')
 
 class InlineNode(Node):
     """
@@ -343,7 +389,8 @@ class BlockLevelSequence(BlockLevelNode):
     """
 
     def render(self, **kw):
-        return join_blocks(self.contents, **kw)
+        text = join_blocks(self.contents, **kw)
+        return [self.start_delimiter, text, self.end_delimiter]
 
 @html_element('h1', 'h2', 'h3', 'h4', 'h5', 'h6')
 class Heading(BlockLevelNode):
@@ -372,7 +419,7 @@ class Heading(BlockLevelNode):
         # Add a line with the marker symbol for headings, repeated on the full
         # line, at the top of the heading.
         lines.insert(0, ('=' if self.level == 1 else '-') * 79)
-        return "\n".join(lines)
+        return [self.start_delimiter, "\n".join(lines), self.end_delimiter]
 
 @html_element('p')
 class Paragraph(BlockLevelNode):
@@ -383,7 +430,7 @@ class Paragraph(BlockLevelNode):
     """
 
     def render(self, **kw):
-        return join_inline(self.contents, **kw)
+        return [self.start_delimiter, join_inline(self.contents, **kw), self.end_delimiter]
 
 @html_element('pre')
 class PreformattedText(BlockLevelNode):
@@ -392,6 +439,10 @@ class PreformattedText(BlockLevelNode):
     Block level node to represent preformatted text.
     Maps to the HTML element ``<pre>``.
     """
+
+    # Vim help file markers for preformatted text.
+    start_delimiter = OutputDelimiter('\n>\n')
+    end_delimiter = OutputDelimiter('\n<\n')
 
     @staticmethod
     def parse(html_node):
@@ -413,15 +464,9 @@ class PreformattedText(BlockLevelNode):
         return [self.text]
 
     def render(self, **kw):
-        # Indent the original text.
-        lines = []
         prefix = ' ' * kw['indent']
-        for line in self.text.splitlines():
-            lines.append(prefix + line)
-        # Add Vim help file markers indicating the preformatted text.
-        lines.insert(0, ">")
-        lines.append("<")
-        return "\n".join(lines)
+        text = "\n".join(prefix + l for l in self.text.splitlines())
+        return [self.start_delimiter, text, self.end_delimiter]
 
 @html_element('ul', 'ol')
 class List(BlockLevelNode):
@@ -442,15 +487,23 @@ class List(BlockLevelNode):
         return node
 
     def render(self, **kw):
+        # First pass: Render the child nodes and pick the right delimiter.
         items = []
-        delimiter = '\n'
+        delimiter = OutputDelimiter('\n')
         for node in self.contents:
             if isinstance(node, ListItem):
                 text = node.render(number=len(items) + 1, **kw)
                 items.append(text)
-                if '\n' in text:
-                    delimiter = '\n\n'
-        return delimiter.join(items)
+                if any('\n' in s for s in text if not isinstance(s, OutputDelimiter)):
+                    delimiter = OutputDelimiter('\n\n')
+        # Second pass: Combine the delimiters & rendered child nodes.
+        output = [self.start_delimiter]
+        for i, item in enumerate(items):
+            if i > 0:
+                output.append(delimiter)
+            output.extend(item)
+        output.append(self.end_delimiter)
+        return output
 
 @html_element('li')
 class ListItem(BlockLevelNode):
@@ -470,13 +523,22 @@ class ListItem(BlockLevelNode):
             prefix += '- '
         # Update indent for child nodes.
         kw['indent'] = len(prefix)
-        # Render child nodes.
+        # Render the child node(s).
         text = join_smart(self.contents, **kw)
+        # Make sure we're dealing with a list of output delimiters and text.
+        if not isinstance(text, list):
+            text = [text]
+        # Ignore (remove) any leading output delimiters from the
+        # text (only when the delimiter itself is whitespace).
+        while text and isinstance(text[0], OutputDelimiter) and text[0].string.isspace():
+            text.pop(0)
+        # Remove leading indent from first text node.
+        if text and isinstance(text[0], (str, unicode)):
+            for i in xrange(len(prefix)):
+                if text[0] and text[0][0].isspace():
+                    text[0] = text[0][1:]
         # Prefix the list item bullet.
-        for i in xrange(len(prefix)):
-            if text and text[0].isspace():
-                text = text[1:]
-        return prefix + text
+        return [self.start_delimiter, prefix] + text + [self.end_delimiter]
 
 @html_element('table')
 class Table(BlockLevelNode):
@@ -496,11 +558,15 @@ class Reference(BlockLevelNode):
     Block level node to represent a reference to a hyper link.
     """
 
+    start_delimiter = OutputDelimiter('\n')
+    end_delimiter = OutputDelimiter('\n')
+
     def __repr__(self):
         return "Reference(number=%i, target=%r)" % (self.number, self.target)
 
     def render(self, **kw):
-        return "[%i] %s" % (self.number, self.target)
+        text = "[%i] %s" % (self.number, self.target)
+        return [self.start_delimiter, text, self.end_delimiter]
 
 class InlineSequence(InlineNode):
 
@@ -563,22 +629,15 @@ def join_blocks(nodes, **kw):
     """
     Join a sequence of block level nodes into a single string.
     """
-    output = ''
+    output = []
     for node in nodes:
         if isinstance(node, InlineNode):
             # Without this 'hack' whitespace compaction & line wrapping would
             # not be applied to inline nodes which are direct children of list
             # items that also have children which are block level nodes.
-            text = join_inline([node], **kw)
+            output.append(join_inline([node], **kw))
         else:
-            text = node.render(**kw)
-        if text and not text.isspace():
-            if not output:
-                output = text
-            elif isinstance(node, PreformattedText):
-                output += '\n' + text
-            else:
-                output += '\n\n' + text
+            output.extend(node.render(**kw))
     return output
 
 def join_inline(nodes, **kw):
@@ -597,6 +656,17 @@ def compact(text):
     Compact whitespace in a string (also trims whitespace from the sides).
     """
     return " ".join(text.split())
+
+def flatten(l):
+    """
+    From http://stackoverflow.com/a/2158532/788200.
+    """
+    for el in l:
+        if isinstance(el, collections.Iterable) and not isinstance(el, basestring):
+            for sub in flatten(el):
+                yield sub
+        else:
+            yield el
 
 if __name__ == '__main__':
     main()
