@@ -195,12 +195,11 @@ def shift_headings(root):
     # Find the largest headings (lowest level).
     min_level = None
     logger.debug("Finding largest headings ..")
-    for node in walk_tree(root):
-        if isinstance(node, Heading):
-            if min_level is None:
-                min_level = node.level
-            elif node.level < min_level:
-                min_level = node.level
+    for node in walk_tree(root, Heading):
+        if min_level is None:
+            min_level = node.level
+        elif node.level < min_level:
+            min_level = node.level
     if min_level is None:
         logger.debug("HTML document doesn't contain any headings?")
         return
@@ -210,9 +209,8 @@ def shift_headings(root):
     if min_level > 1:
         to_subtract = min_level - 1
         logger.debug("Shifting headings by %i levels.", to_subtract)
-        for node in walk_tree(root):
-            if isinstance(node, Heading):
-                node.level -= to_subtract
+        for node in walk_tree(root, Heading):
+            node.level -= to_subtract
 
 def find_references(root):
     """
@@ -226,38 +224,37 @@ def find_references(root):
     # Ordered list of "Reference" objects.
     by_reference = []
     logger.debug("Scanning parse tree for hyper links ..")
-    for node in walk_tree(root):
-        if isinstance(node, HyperLink):
-            target = urllib.unquote(node.target)
-            # Exclude relative URLs and literal URLs from list of references.
-            if '://' not in target or target == node.text:
-                continue
-            # Make sure we don't duplicate references.
-            if target in by_target:
-                r = by_target[target]
-            else:
-                # TODO The "Reference" objects feel a bit arbitrary, isn't there a better abstraction?
-                number = len(by_reference) + 1
-                logger.debug("Extracting reference #%i to %s ..", number, target)
-                r = Reference(number=number, target=target)
-                by_reference.append(r)
-                by_target[target] = r
-            node.reference = r
+    for node in walk_tree(root, HyperLink):
+        target = urllib.unquote(node.target)
+        # Exclude relative URLs and literal URLs from list of references.
+        if '://' not in target or target == node.text:
+            continue
+        # Make sure we don't duplicate references.
+        if target in by_target:
+            r = by_target[target]
+        else:
+            # TODO The "Reference" objects feel a bit arbitrary, isn't there a better abstraction?
+            number = len(by_reference) + 1
+            logger.debug("Extracting reference #%i to %s ..", number, target)
+            r = Reference(number=number, target=target)
+            by_reference.append(r)
+            by_target[target] = r
+        node.reference = r
     logger.debug("Found %i hyper links in parse tree.", len(by_reference))
     if by_reference:
         logger.debug("Generating 'References' section ..")
         root.contents.append(Heading(level=1, contents=[Text(text="References")]))
         root.contents.extend(by_reference)
 
-def walk_tree(root):
+def walk_tree(root, *node_types):
     """
     Generator that makes it easy to walk through the simplified parse tree.
     Walks through the tree in the linear order of the nodes (reading order).
     """
-    # TODO Filter by node type?
     flattened = []
     def recurse(node):
-        flattened.append(node)
+        if not (node_types and not isinstance(node, node_types)):
+            flattened.append(node)
         for child in getattr(node, 'contents', []):
             recurse(child)
     recurse(root)
