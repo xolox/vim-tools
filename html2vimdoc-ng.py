@@ -352,7 +352,7 @@ class Heading(BlockLevelNode):
         lines = [line + " ~" for line in textwrap.wrap(text, width=TEXT_WIDTH - 2)]
         # Add a line with the marker symbol for headings, repeated on the full
         # line, at the top of the heading.
-        lines.insert(0, ('=' if level == 1 else '-') * 79)
+        lines.insert(0, ('=' if self.level == 1 else '-') * 79)
         return "\n".join(lines)
 
 @html_element('p')
