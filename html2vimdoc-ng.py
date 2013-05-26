@@ -77,7 +77,7 @@ def main():
         output = html2vimdoc(html, selectors_to_ignore=['h3 a[class=anchor]'])
         print output.encode('utf-8')
 
-def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[]):
+def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
     """
     Convert HTML documents to the Vim help file format.
     """
@@ -87,9 +87,11 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[]):
     root = find_root_node(tree, content_selector)
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
-    references = find_references(simple_tree)
+    find_references(simple_tree)
     vimdoc = simple_tree.render(level=0)
-    return vimdoc + list_references(references) + "vim: ft=help"
+    if modeline and not modeline.isspace():
+        vimdoc += "\n\n" + modeline
+    return vimdoc
 
 def decode_hexadecimal_entities(html):
     """
@@ -214,48 +216,45 @@ def shift_headings(root):
 
 def find_references(root):
     """
-    Find all hyper links in the HTML document and give each a unique number for
-    reference.
+    Scan the document tree for hyper links. Each hyper link is given a unique
+    number so that it can be referenced inside the Vim help file. A new section
+    is appended to the tree which lists an overview of all references to hyper
+    links extracted from the HTML document.
     """
+    # Mapping of hyper link targets to "Reference" objects.
     by_target = {}
+    # Ordered list of "Reference" objects.
     by_reference = []
-    logger.debug("Finding references ..")
+    logger.debug("Scanning parse tree for hyper links ..")
     for node in walk_tree(root):
         if isinstance(node, HyperLink):
             target = urllib.unquote(node.target)
-            # Don't reference a given URL more than once.
-            if target in by_target:
-                continue
             # Exclude relative URLs and literal URLs from list of references.
             if '://' not in target or target == node.text:
                 continue
-            number = len(by_reference) + 1
-            logger.debug("Extracting reference #%i to %s ..", number, target)
-            r = Reference(number=number, target=target)
-            by_reference.append(r)
-            by_target[target] = r
+            # Make sure we don't duplicate references.
+            if target in by_target:
+                r = by_target[target]
+            else:
+                # TODO The "Reference" objects feel a bit arbitrary, isn't there a better abstraction?
+                number = len(by_reference) + 1
+                logger.debug("Extracting reference #%i to %s ..", number, target)
+                r = Reference(number=number, target=target)
+                by_reference.append(r)
+                by_target[target] = r
             node.reference = r
-    logger.debug("Extracted %i references.", len(by_reference))
-    return by_reference
-
-def list_references(references):
-    """
-    Generate an overview of references to hyper links.
-    """
-    lines = []
-    for r in references:
-        lines.append(r.render(level=0))
-    logger.debug("Rendered %i references.", len(lines))
-    if lines:
-        heading = Heading(level=1, contents=[Text(text="References")])
-        return "\n\n" + heading.render(level=0) + "\n\n" + "\n".join(lines) + "\n\n"
-    return "\n\n"
+    logger.debug("Found %i hyper links in parse tree.", len(by_reference))
+    if by_reference:
+        logger.debug("Generating 'References' section ..")
+        root.contents.append(Heading(level=1, contents=[Text(text="References")]))
+        root.contents.extend(by_reference)
 
 def walk_tree(root):
     """
     Generator that makes it easy to walk through the simplified parse tree.
     Walks through the tree in the linear order of the nodes (reading order).
     """
+    # TODO Filter by node type?
     flattened = []
     def recurse(node):
         flattened.append(node)
@@ -450,8 +449,7 @@ class ListItem(BlockLevelNode):
     """
 
     def render(self, level):
-        # TODO ListItem is kind of a special case? We are responsible for
-        # hard wrapping any direct inline children of the list item.
+        # XXX ListItem is kind of a special case? It's responsible for hard wrapping any direct inline children.
         return join_smart(self.contents, level=level)
 
 @html_element('table')
