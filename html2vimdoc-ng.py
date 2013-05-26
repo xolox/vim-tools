@@ -397,7 +397,7 @@ class PreformattedText(BlockLevelNode):
         return [self.text]
 
     def render(self, level):
-        indent = " " * (level + 4)
+        indent = " " * ((1 + level) * SHIFT_WIDTH)
         # Remove common indentation from the original text.
         text = textwrap.dedent(self.text)
         # Remove leading/trailing empty lines.
@@ -412,6 +412,7 @@ class PreformattedText(BlockLevelNode):
             output.append(indent + line)
         # Add a Vim help file marker indicating the preformatted text.
         output.insert(0, ">")
+        output.append("<")
         return "\n".join(output)
 
 @html_element('ul', 'ol')
