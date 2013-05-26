@@ -88,7 +88,7 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[]):
     shift_headings(simple_tree)
     references = find_references(simple_tree)
     vimdoc = simple_tree.render(level=0)
-    return vimdoc + "\n\n" + list_references(references) + "\n\nvim: ft=help"
+    return vimdoc + list_references(references) + "vim: ft=help"
 
 def decode_hexadecimal_entities(html):
     """
@@ -240,7 +240,10 @@ def list_references(references):
     for r in references:
         lines.append(r.render(level=0))
     logger.debug("Rendered %i references.", len(lines))
-    return "\n".join(lines)
+    if lines:
+        heading = Heading(level=1, contents=[Text(text="References")])
+        return "\n\n" + heading.render(level=0) + "\n\n" + "\n".join(lines) + "\n\n"
+    return "\n\n"
 
 def walk_tree(root):
     """
