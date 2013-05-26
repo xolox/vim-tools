@@ -86,8 +86,9 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[]):
     root = find_root_node(tree, content_selector)
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
+    references = find_references(simple_tree)
     vimdoc = simple_tree.render(level=0)
-    return vimdoc + "\n\nvim: ft=help"
+    return vimdoc + "\n\n" + list_references(references) + "\n\nvim: ft=help"
 
 def decode_hexadecimal_entities(html):
     """
@@ -210,18 +211,49 @@ def shift_headings(root):
             if isinstance(node, Heading):
                 node.level -= to_subtract
 
+def find_references(root):
+    """
+    Find all hyper links in the HTML document and give each a unique number for
+    reference.
+    """
+    by_target = {}
+    by_reference = []
+    logger.debug("Finding references ..")
+    for node in walk_tree(root):
+        if isinstance(node, HyperLink):
+            if node.target not in by_target:
+                number = len(by_reference) + 1
+                logger.debug("Extracting reference #%i to %s ..", number, node.target)
+                r = Reference(number=number,
+                              target=node.target)
+                by_reference.append(r)
+                by_target[node.target] = r
+            node.reference = r
+    logger.debug("Extracted %i references.", len(by_reference))
+    return by_reference
+
+def list_references(references):
+    """
+    Generate an overview of references to hyper links.
+    """
+    lines = []
+    for r in references:
+        lines.append(r.render(level=0))
+    logger.debug("Rendered %i references.", len(lines))
+    return "\n".join(lines)
+
 def walk_tree(root):
     """
     Generator that makes it easy to walk through the simplified parse tree.
-    Makes no guarantees about the order in which it walks the tree.
+    Walks through the tree in the linear order of the nodes (reading order).
     """
-    stack = [root]
-    while stack:
-        node = stack.pop(0)
-        yield node
+    flattened = []
+    def recurse(node):
+        flattened.append(node)
         for child in getattr(node, 'contents', []):
-            yield child
-            stack.append(child)
+            recurse(child)
+    recurse(root)
+    return flattened
 
 # Decorators.
 
@@ -423,6 +455,15 @@ class Table(BlockLevelNode):
         # TODO Parse and render tabular data.
         return ''
 
+class Reference(BlockLevelNode):
+
+    """
+    Block level node to represent a reference to a hyper link.
+    """
+
+    def render(self, level):
+        return "[%i] %s" % (self.number, self.target)
+
 class InlineSequence(InlineNode):
 
     """
@@ -433,7 +474,7 @@ class InlineSequence(InlineNode):
         return join_inline(self.contents, level=level)
 
 @html_element('a')
-class Link(InlineNode):
+class HyperLink(InlineNode):
 
     """
     Inline node to represent hyper links.
@@ -442,11 +483,11 @@ class Link(InlineNode):
 
     @staticmethod
     def parse(html_node):
-        return Link(text=''.join(html_node.findAll(text=True)),
-                    target=html_node['href'])
+        return HyperLink(text=''.join(html_node.findAll(text=True)),
+                         target=html_node['href'])
 
     def render(self, level):
-        return "%s (%s)" % (self.text, self.target)
+        return "%s [%i]" % (self.text, self.reference.number)
 
 class Text(InlineNode):
 
