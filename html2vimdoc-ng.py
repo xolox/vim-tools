@@ -41,6 +41,7 @@ The ``html2vimdoc`` module works in three phases:
 import logging
 import re
 import textwrap
+import urllib
 
 # External dependency, install with:
 #   sudo apt-get install python-beautifulsoup
@@ -221,13 +222,18 @@ def find_references(root):
     logger.debug("Finding references ..")
     for node in walk_tree(root):
         if isinstance(node, HyperLink):
-            if node.target not in by_target:
-                number = len(by_reference) + 1
-                logger.debug("Extracting reference #%i to %s ..", number, node.target)
-                r = Reference(number=number,
-                              target=node.target)
-                by_reference.append(r)
-                by_target[node.target] = r
+            target = urllib.unquote(node.target)
+            # Don't reference a given URL more than once.
+            if target in by_target:
+                continue
+            # Exclude relative URLs and literal URLs from list of references.
+            if '://' not in target or target == node.text:
+                continue
+            number = len(by_reference) + 1
+            logger.debug("Extracting reference #%i to %s ..", number, target)
+            r = Reference(number=number, target=target)
+            by_reference.append(r)
+            by_target[target] = r
             node.reference = r
     logger.debug("Extracted %i references.", len(by_reference))
     return by_reference
