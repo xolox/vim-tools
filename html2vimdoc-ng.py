@@ -88,6 +88,8 @@ def html2vimdoc(html, content_selector='#content', selectors_to_ignore=[], model
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
     find_references(simple_tree)
+    with open('tree.py', 'w') as handle:
+        handle.write("%r\n" % simple_tree)
     vimdoc = simple_tree.render(indent=0)
     if modeline and not modeline.isspace():
         vimdoc += "\n\n" + modeline
@@ -158,7 +160,9 @@ def simplify_node(html_node):
         text = html_node.string
         if text and not text.isspace():
             logger.debug("Mapping text node: %r", text)
-        return Text(text=text)
+            return Text(text=text)
+        # Empty text nodes are pruned from the tree.
+        return None
     # Now we deal with all of the known & supported HTML elements.
     name = getattr(html_node, 'name', None)
     logger.debug("Trying to map HTML element <%s> ..", name)
@@ -298,8 +302,14 @@ class Node(object):
         """
         Dumb but useful representation of parse tree for debugging purposes.
         """
-        children = ",\n".join(repr(c) for c in self.contents)
-        return "%s(%s)" % (self.__class__.__name__, children)
+        nodes = [repr(n) for n in self.contents]
+        if not nodes:
+            contents = ""
+        elif len(nodes) == 1:
+            contents = nodes[0]
+        else:
+            contents = "\n" + ",\n".join(nodes)
+        return "%s(%s)" % (self.__class__.__name__, contents)
 
     @classmethod
     def parse(cls, html_node):
@@ -486,6 +496,9 @@ class Reference(BlockLevelNode):
     Block level node to represent a reference to a hyper link.
     """
 
+    def __repr__(self):
+        return "Reference(number=%i, target=%r)" % (self.number, self.target)
+
     def render(self, **kw):
         return "[%i] %s" % (self.number, self.target)
 
@@ -510,6 +523,9 @@ class HyperLink(InlineNode):
     def parse(html_node):
         return HyperLink(text=''.join(html_node.findAll(text=True)),
                          target=html_node['href'])
+
+    def __repr__(self):
+        return "HyperLink(text=%r, target=%r, reference=%r)" % (self.text, self.target, self.reference)
 
     def render(self, **kw):
         return "%s [%i]" % (self.text, self.reference.number)
@@ -549,7 +565,13 @@ def join_blocks(nodes, **kw):
     """
     output = ''
     for node in nodes:
-        text = node.render(**kw)
+        if isinstance(node, InlineNode):
+            # Without this 'hack' whitespace compaction & line wrapping would
+            # not be applied to inline nodes which are direct children of list
+            # items that also have children which are block level nodes.
+            text = join_inline([node], **kw)
+        else:
+            text = node.render(**kw)
         if text and not text.isspace():
             if not output:
                 output = text
@@ -563,15 +585,12 @@ def join_inline(nodes, **kw):
     """
     Join a sequence of inline nodes into a single string.
     """
-    output = []
-    for i, node in enumerate(nodes):
-        output.append(node.render(**kw))
     prefix = ' ' * kw['indent']
-    width = TEXT_WIDTH - len(prefix)
-    return "\n".join(textwrap.wrap(compact("".join(output)),
+    rendered_nodes = [n.render(**kw) for n in nodes]
+    return "\n".join(textwrap.wrap(compact("".join(rendered_nodes)),
                                    initial_indent=prefix,
                                    subsequent_indent=prefix,
-                                   width=width))
+                                   width=TEXT_WIDTH - len(prefix)))
 
 def compact(text):
     """
