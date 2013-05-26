@@ -248,17 +248,18 @@ def find_references(root):
 
 def walk_tree(root, *node_types):
     """
-    Generator that makes it easy to walk through the simplified parse tree.
-    Walks through the tree in the linear order of the nodes (reading order).
+    Return a list of nodes (optionally filtered by type) ordered by the
+    original document order (i.e. the left to right, top to bottom reading
+    order of English text).
     """
-    flattened = []
+    ordered_nodes = []
     def recurse(node):
         if not (node_types and not isinstance(node, node_types)):
-            flattened.append(node)
+            ordered_nodes.append(node)
         for child in getattr(node, 'contents', []):
             recurse(child)
     recurse(root)
-    return flattened
+    return ordered_nodes
 
 # Decorators.
 
