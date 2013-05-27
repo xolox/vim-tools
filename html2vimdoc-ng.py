@@ -90,6 +90,7 @@ def html2vimdoc(html, title='', filename='', content_selector='#content', select
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
     find_references(simple_tree)
+    generate_table_of_contents(simple_tree)
     # XXX Write the AST to disk (for debugging).
     with open('tree.py', 'w') as handle:
         handle.write("%r\n" % simple_tree)
@@ -302,6 +303,30 @@ def find_references(root):
         logger.debug("Generating 'References' section ..")
         root.contents.append(Heading(level=1, contents=[Text(text="References")]))
         root.contents.extend(by_reference)
+
+def generate_table_of_contents(root):
+    # 1. Generate List().
+    # 2. Insert in tree.
+    entries = []
+    counters = []
+    for heading in walk_tree(root, Heading):
+        logger.debug("Stack of counters before reset: %s", counters)
+        # Forget no longer relevant counters.
+        counters = counters[:heading.level]
+        logger.debug("Stack of counters after reset: %s", counters)
+        # Make the stack of counters big enough.
+        while len(counters) < heading.level:
+            counters.append(1)
+        logger.debug("Stack of counters after padding: %s", counters)
+        entries.append(TableOfContentsEntry(
+            number=counters[heading.level - 1],
+            text=compact(join_inline(heading.contents, indent=heading.level)),
+            indent=heading.level))
+        counters[heading.level - 1] += 1
+    logger.debug("Table of contents: %s", entries)
+    root.contents.insert(0, Heading(level=1, contents=[Text(text="Contents")]))
+    root.contents.insert(1, BlockLevelSequence(contents=entries))
+    # TODO Finish TOC generation using ordered lists :-D
 
 def walk_tree(root, *node_types):
     """
@@ -561,7 +586,9 @@ class ListItem(BlockLevelNode):
         # Prefix the list item bullet.
         return [self.start_delimiter, prefix] + text + [self.end_delimiter]
 
-@html_element('table')
+# TODO Parse and render tabular data.
+#@html_element('table')
+
 class Table(BlockLevelNode):
 
     """
@@ -570,7 +597,6 @@ class Table(BlockLevelNode):
     """
 
     def render(self, **kw):
-        # TODO Parse and render tabular data.
         return ''
 
 class Reference(BlockLevelNode):
@@ -587,6 +613,23 @@ class Reference(BlockLevelNode):
 
     def render(self, **kw):
         text = "[%i] %s" % (self.number, self.target)
+        return [self.start_delimiter, text, self.end_delimiter]
+
+class TableOfContentsEntry(BlockLevelNode):
+
+    """
+    Block level node to represent a line in the table of contents.
+    """
+
+    start_delimiter = OutputDelimiter('\n')
+    end_delimiter = OutputDelimiter('\n')
+
+    def __repr__(self):
+        return "TableOfContentsEntry(number=%i, text=%r, indent=%i)" % (self.number, self.text, self.indent)
+
+    def render(self, **kw):
+        prefix = " " * self.indent
+        text = "%s%i. %s" % (prefix, self.number, self.text)
         return [self.start_delimiter, text, self.end_delimiter]
 
 class InlineSequence(InlineNode):
