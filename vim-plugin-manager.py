@@ -372,7 +372,7 @@ class VimPluginManager:
         Automatically publish a new release to Vim Online without opening an
         actual web browser (scripted HTTP exchange using Mechanize module).
         """
-        self.logger.info("Uploading release to Vim Online ..")
+        self.logger.info("Preparing to upload release to Vim Online ..")
         # Find the username & password in the ~/.netrc file.
         user_netrc = netrc.netrc(os.path.expanduser('~/.netrc'))
         username, _, password = user_netrc.hosts['www.vim.org']
@@ -381,6 +381,7 @@ class VimPluginManager:
         # Generate the ZIP archive and up-load it.
         zip_archive = self.generate_release_archive(plugin_name)
         with open(zip_archive) as zip_handle:
+            self.logger.info("Uploading release to Vim Online (please be patient) ..")
             # Open a session to Vim Online.
             add_script_url = "http://www.vim.org/scripts/add_script_version.php?script_id=%i" % script_id
             self.logger.debug("Connecting to Vim Online at %s ..", add_script_url)
