@@ -663,6 +663,24 @@ class HyperLink(InlineNode):
         else:
             return self.text
 
+@html_element('code', 'tt')
+class CodeFragment(InlineNode):
+
+    """
+    Inline node to represent code fragments.
+    Maps to the HTML elements ``<code>`` and ``<tt>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return CodeFragment(text=''.join(html_node.findAll(text=True)))
+
+    def __repr__(self):
+        return "CodeFragment(text=%rr)" % self.text
+
+    def render(self, **kw):
+        return "$%s$" % self.text
+
 class Text(InlineNode):
 
     """
