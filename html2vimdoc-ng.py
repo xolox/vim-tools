@@ -211,11 +211,8 @@ def simplify_node(html_node):
     # First we'll get text nodes out of the way since they're very common.
     if isinstance(html_node, NavigableString):
         text = html_node.string
-        if text and not text.isspace():
-            logger.debug("Mapping text node: %r", text)
-            return Text(text=text)
-        # Empty text nodes are pruned from the tree.
-        return None
+        logger.debug("Mapping text node: %r", text)
+        return Text(text=text)
     # Now we deal with all of the known & supported HTML elements.
     name = getattr(html_node, 'name', None)
     logger.debug("Trying to map HTML element <%s> ..", name)
@@ -778,11 +775,16 @@ def join_blocks(nodes, **kw):
         if isinstance(node, InlineNode):
             # Without this 'hack' whitespace compaction & line wrapping would
             # not be applied to inline nodes which are direct children of list
-            # items that also have children which are block level nodes.
+            # items that also have children which are block level nodes (that
+            # was a mouthful).
             output.append(join_inline([node], **kw))
         else:
             output.extend(node.render(**kw))
-    return output
+    # Prune empty block level nodes from the output.
+    return filter(not_an_empty_string, output)
+
+def not_an_empty_string(v):
+    return not (isinstance(v, basestring) and (len(v) == 0 or v.isspace()))
 
 def join_inline(nodes, **kw):
     """
