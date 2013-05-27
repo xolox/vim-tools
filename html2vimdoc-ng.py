@@ -821,6 +821,8 @@ def create_tag(text, prefix, is_code):
         anchor = text.lower()
         # Remove parenthesized expressions.
         anchor = re.sub(r'\(.*?\)', '', anchor)
+        # Remove apostrophes (replacing them with dashes is silly).
+        anchor = re.sub(r"(\w)'(\w)", r'\1\2', anchor)
         # Remove fluff words.
         tokens = []
         for token in anchor.split():
