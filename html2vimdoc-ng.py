@@ -489,6 +489,10 @@ class Heading(BlockLevelNode):
         return getattr(self, 'tag', None)
 
     def render(self, **kw):
+        # Check for code blocks in the heading and "let the code blocks know"
+        # that they're not in a position to use `backticks` for highlighting.
+        for node in walk_tree(self, CodeFragment):
+            node.backticks_disabled = True
         # We start with a line containing the marker symbol for headings,
         # repeated on the full line. The symbol depends on the level.
         lines = [('=' if self.level == 1 else '-') * TEXT_WIDTH]
@@ -731,7 +735,10 @@ class CodeFragment(InlineNode):
         return "CodeFragment(text=%rr)" % self.text
 
     def render(self, **kw):
-        return "$%s$" % self.text
+        if re.search('[` \t\r\n]', self.text) or getattr(self, 'backticks_disabled', False):
+            return self.text
+        else:
+            return "`%s`" % self.text
 
 class Text(InlineNode):
 
