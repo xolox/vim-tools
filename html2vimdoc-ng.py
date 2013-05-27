@@ -90,6 +90,7 @@ def html2vimdoc(html, title='', filename='', content_selector='#content', select
     simple_tree = simplify_tree(root)
     shift_headings(simple_tree)
     find_references(simple_tree)
+    tag_headings(simple_tree, filename)
     generate_table_of_contents(simple_tree)
     # XXX Write the AST to disk (for debugging).
     with open('tree.py', 'w') as handle:
@@ -268,6 +269,20 @@ def shift_headings(root):
         for node in walk_tree(root, Heading):
             node.level -= to_subtract
 
+def tag_headings(root, filename):
+    """
+    Generate Vim help file tags for headings.
+    """
+    tagged_headings = {}
+    prefix = re.sub(r'\.txt$', '', filename)
+    logger.debug("Tagging headings using prefix %r ..", prefix)
+    for node in walk_tree(root, Heading):
+        logger.debug("Selecting tag for heading: %s", node)
+        tag = node.tag_heading(tagged_headings, prefix)
+        if tag:
+            logger.debug("Found suitable tag: %s", tag)
+            tagged_headings[tag] = node
+
 def find_references(root):
     """
     Scan the document tree for hyper links. Each hyper link is given a unique
@@ -321,7 +336,8 @@ def generate_table_of_contents(root):
         entries.append(TableOfContentsEntry(
             number=counters[heading.level - 1],
             text=compact(join_inline(heading.contents, indent=heading.level)),
-            indent=heading.level))
+            indent=heading.level,
+            tag=getattr(heading, 'tag', None)))
         counters[heading.level - 1] += 1
     logger.debug("Table of contents: %s", entries)
     root.contents.insert(0, Heading(level=1, contents=[Text(text="Contents")]))
@@ -453,18 +469,42 @@ class Heading(BlockLevelNode):
         return Heading(level=int(html_node.name[1]),
                        contents=simplify_children(html_node))
 
+    def tag_heading(self, existing_tags, prefix):
+        # Look for a <code> element (indicating a source code
+        # entity) whose text has not yet been used as a tag.
+        matches = walk_tree(self, CodeFragment)
+        logger.debug("Found %i code fragments inside heading: %s", len(matches), matches)
+        for node in matches:
+            tag = create_tag(node.text, prefix=prefix, is_code=True)
+            logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, node.text)
+            if tag not in existing_tags:
+                self.tag = tag
+                break
+        if not hasattr(self, 'tag'):
+            text = join_inline(self.contents, indent=0)
+            tag = create_tag(text, prefix=prefix, is_code=False)
+            logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, text)
+            if tag not in existing_tags:
+                self.tag = tag
+        return getattr(self, 'tag', None)
+
     def render(self, **kw):
-        # Join the inline child nodes together into a single string.
-        text = join_inline(self.contents, **kw)
-        # Wrap the heading's text. The two character difference is " ~", the
-        # suffix used to mark Vim help file headings.
+        # We start with a line containing the marker symbol for headings,
+        # repeated on the full line. The symbol depends on the level.
+        lines = [('=' if self.level == 1 else '-') * TEXT_WIDTH]
+        # On the second line, aligned to the right, we add a section tag.
+        logger.debug("Rendering heading: %s", self)
+        if hasattr(self, 'tag'):
+            anchor = "*%s*" % self.tag
+            prefix = ' ' * (TEXT_WIDTH - len(anchor))
+            lines.append(prefix + anchor)
+        # Prepare the prefix & suffix for each line, hard wrap the
+        # heading text and apply the prefix & suffix to each line.
         prefix = ' ' * kw['indent']
         suffix = ' ~'
         width = TEXT_WIDTH - len(prefix) - len(suffix)
-        lines = [prefix + l + suffix for l in textwrap.wrap(text, width=width)]
-        # Add a line with the marker symbol for headings, repeated on the full
-        # line, at the top of the heading.
-        lines.insert(0, ('=' if self.level == 1 else '-') * 79)
+        text = join_inline(self.contents, **kw)
+        lines.extend(prefix + l + suffix for l in textwrap.wrap(text, width=width))
         return [self.start_delimiter, "\n".join(lines), self.end_delimiter]
 
 @html_element('p')
@@ -628,8 +668,20 @@ class TableOfContentsEntry(BlockLevelNode):
         return "TableOfContentsEntry(number=%i, text=%r, indent=%i)" % (self.number, self.text, self.indent)
 
     def render(self, **kw):
-        prefix = " " * self.indent
-        text = "%s%i. %s" % (prefix, self.number, self.text)
+        text = ''
+        # Render the indentation.
+        text += " " * self.indent
+        # Render the counter.
+        text += "%i. " % self.number
+        # Render the text.
+        text += self.text
+        if self.tag:
+            tag = "|%s|" % self.tag
+            # Render the padding.
+            padding = max(1, TEXT_WIDTH - len(text) - len(tag))
+            text += " " * padding
+            # Render the tag.
+            text += tag
         return [self.start_delimiter, text, self.end_delimiter]
 
 class InlineSequence(InlineNode):
@@ -741,6 +793,38 @@ def compact(text):
     Compact whitespace in a string (also trims whitespace from the sides).
     """
     return " ".join(text.split())
+
+def create_tag(text, prefix, is_code):
+    """
+    Convert arbitrary text to a Vim help file tag.
+    """
+    if is_code:
+        # Preserve the case of programming language identifiers.
+        anchor = text
+        # Replace operators with words so we don't lose too much information.
+        for op, word in (('+', 'add'), ('-', 'sub'), ('*', 'mul'), ('/', 'div')):
+            anchor = anchor.replace(op, ' %s ' % word)
+        # Replace parenthesized expressions with just the parentheses
+        # (intent: to not include function arguments in tags).
+        anchor = re.sub(r'\s*\(.*?\)', '()', anchor)
+    else:
+        # Lowercase regular English expressions.
+        anchor = text.lower()
+        # Remove parenthesized expressions.
+        anchor = re.sub(r'\(.*?\)', '', anchor)
+        # Remove fluff words.
+        tokens = []
+        for token in anchor.split():
+            if token not in ('a', 'the', 'and', 'some'):
+                tokens.append(token)
+        anchor = " ".join(tokens)
+    # Apply the prefix only when it's not completely redundant.
+    if not anchor.lower().startswith(prefix.lower()):
+        anchor = prefix + '-' + anchor
+    # Tag names can contain only a small subset of characters.
+    anchor = re.sub('[^A-Za-z0-9_().:]+', '-', anchor)
+    # Trim leading/trailing sanitized characters.
+    return anchor.strip('-')
 
 def flatten(l):
     """
