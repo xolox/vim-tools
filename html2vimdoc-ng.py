@@ -115,7 +115,7 @@ def html2vimdoc(html, title='', filename='', content_selector='#content', select
 
 def select_title(tree, title):
     if not title:
-        elements = tree.findAll('title')
+        elements = tree.findAll(('title', 'h1'))
         if elements:
             title = ''.join(elements[0].findAll(text=True))
     return title
