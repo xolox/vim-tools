@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
 # Missing features:
-# TODO Generate table of contents from headings.
-# TODO Find tag definitions in headings and mark them.
+# TODO Command line interface.
 # TODO Find tag references in text and mark them.
+# TODO Support for <table> elements.
 #
 # Finding the right abstractions:
 # FIXME Quirky mix of classes and functions?
@@ -863,11 +863,7 @@ def join_blocks(nodes, **kw):
             output.append(join_inline([node], **kw))
         else:
             output.extend(node.render(**kw))
-    # Prune empty block level nodes from the output.
-    return filter(not_an_empty_string, output)
-
-def not_an_empty_string(v):
-    return not (isinstance(v, basestring) and (len(v) == 0 or v.isspace()))
+    return output
 
 def join_inline(nodes, **kw):
     """
