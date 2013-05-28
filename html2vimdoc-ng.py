@@ -89,12 +89,11 @@ def html2vimdoc(html, title='', filename='', content_selector='#content', select
     ignore_given_selectors(tree, selectors_to_ignore)
     root = find_root_node(tree, content_selector)
     simple_tree = simplify_node(root)
+    make_parents_explicit(simple_tree)
     shift_headings(simple_tree)
     find_references(simple_tree)
     tag_headings(simple_tree, filename)
-    make_parents_explicit(simple_tree)
     generate_table_of_contents(simple_tree)
-    make_parents_explicit(simple_tree)
     # XXX Write the AST to disk (for debugging).
     with open('tree.py', 'w') as handle:
         handle.write("%r\n" % simple_tree)
@@ -293,13 +292,17 @@ def find_references(root):
     by_target = {}
     # Ordered list of "Reference" objects.
     by_reference = []
-    logger.debug("Scanning parse tree for hyper links ..")
-    for node in walk_tree(root, HyperLink):
-        if not node.target:
+    logger.debug("Scanning parse tree for hyper links and other references ..")
+    for node in walk_tree(root, (HyperLink, Image)):
+        if isinstance(node, Image):
+            target = node.src
+        else:
+            target = node.target
+        if not target:
             continue
-        target = urllib.unquote(node.target)
+        target = urllib.unquote(target)
         # Exclude relative URLs and literal URLs from list of references.
-        if '://' not in target or target == node.text:
+        if '://' not in target or target == node.render(indent=0):
             continue
         # Make sure we don't duplicate references.
         if target in by_target:
@@ -312,7 +315,7 @@ def find_references(root):
             by_reference.append(r)
             by_target[target] = r
         node.reference = r
-    logger.debug("Found %i hyper links in parse tree.", len(by_reference))
+    logger.debug("Found %i references.", len(by_reference))
     if by_reference:
         logger.debug("Generating 'References' section ..")
         root.contents.append(Heading(level=1, contents=[Text(contents=["References"])]))
@@ -546,6 +549,10 @@ class Paragraph(BlockLevelNode):
     """
 
     def render(self, **kw):
+        # If the paragraph contains only an image (possible wrapped in another
+        # element) the paragraph is indented by a minimum of two spaces.
+        if len(self.contents) == 1 and len(walk_tree(self, Image)) == 1:
+            kw['indent'] = max(2, kw['indent'])
         return [self.start_delimiter, join_inline(self.contents, **kw), self.end_delimiter]
 
 @html_element('pre')
@@ -720,8 +727,40 @@ class InlineSequence(InlineNode):
         """
         return any(self.contents)
 
+    def __len__(self):
+        """
+        Needed by HyperLink.render().
+        """
+        return len(self.contents)
+
     def render(self, **kw):
         return join_inline(self.contents, **kw)
+
+@html_element('img')
+class Image(InlineNode):
+
+    """
+    Inline node to represent images.
+    Maps to the HTML element ``<img>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return Image(src=html_node.get('src', ''),
+                     alt=html_node.get('alt', ''))
+
+    def __nonzero__(self):
+        return bool(self.src or self.alt)
+
+    def __repr__(self):
+        return "Image(src=%r, alt=%r)" % (self.src, self.alt)
+
+    def render(self, **kw):
+        if hasattr(self, 'reference'):
+            text = "%s (see reference [%i])" % (self.alt, self.reference.number)
+        else:
+            text = self.alt or '(unlabeled image)'
+        return "Image: " + text
 
 @html_element('a')
 class HyperLink(InlineNode):
@@ -733,17 +772,23 @@ class HyperLink(InlineNode):
 
     @staticmethod
     def parse(html_node):
-        return HyperLink(text=''.join(html_node.findAll(text=True)),
-                         target=html_node.get('href', ''))
+        return HyperLink(target=html_node.get('href', ''),
+                         contents=simplify_children(html_node))
 
     def __repr__(self):
-        return "HyperLink(text=%r, target=%r, reference=%r)" % (self.text, self.target, getattr(self, 'reference', None))
+        text = self.render(indent=0)
+        return "HyperLink(text=%r, target=%r, reference=%r)" % (text, self.target, getattr(self, 'reference', None))
 
     def render(self, **kw):
-        if hasattr(self, 'reference'):
-            return "%s [%i]" % (self.text, self.reference.number)
+        images = walk_tree(self, Image)
+        if len(self.contents) == 1 and len(images) == 1:
+            raw_text = "Image: " + images[0].alt
+            text = join_inline([Text(contents=[raw_text])], **kw)
         else:
-            return self.text
+            text = join_inline(self.contents, **kw)
+        if hasattr(self, 'reference'):
+            text = "%s [%i]" % (text, self.reference.number)
+        return text
 
 @html_element('code', 'tt')
 class CodeFragment(InlineNode):
