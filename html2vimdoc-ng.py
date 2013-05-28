@@ -40,6 +40,7 @@ import re
 import sys
 import textwrap
 import urllib
+import urlparse
 
 # External dependency, install with:
 #   sudo apt-get install python-beautifulsoup
@@ -377,9 +378,26 @@ def find_references(root, url):
             target = node.target
         if not target:
             continue
-        target = urllib.unquote(target)
-        # Exclude relative URLs and literal URLs from list of references.
-        if '://' not in target or target == node.render(indent=0):
+        if target == 'http://www.vim.org/':
+            # Don't add a reference to the Vim homepage in Vim help files.
+            continue
+        if target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
+            # Don't add a reference to the online Vim documentation.
+            continue
+        # Try to convert relative URLs into absolute URLs.
+        if url and not re.match(r'^\w+:', target):
+            target = urlparse.urljoin(url, target)
+        # Now try to convert absolute URLs into relative URLs... This does
+        # actually make sense, but it sure sounds stupid :-p. All it really
+        # does is normalize URLs to a common format.
+        relative_target = target
+        if url:
+            relative_target = os.path.relpath(target, url)
+        if relative_target.startswith('#'):
+            # Skip links to page anchors on the same page.
+            continue
+        # Exclude literal URLs from list of references.
+        if target.replace('mailto:', '') == node.render(indent=0):
             continue
         # Make sure we don't duplicate references.
         if target in by_target:
@@ -865,10 +883,23 @@ class HyperLink(InlineNode):
     def render(self, **kw):
         images = walk_tree(self, Image)
         if len(self.contents) == 1 and len(images) == 1:
+            # If the hyper link contains a single child node which is
+            # (or contains) an image, we add a reference for the hyper
+            # link but not the image.
             raw_text = "Image: " + images[0].alt
             text = join_inline([Text(contents=[raw_text])], **kw)
         else:
             text = join_inline(self.contents, **kw)
+        # Turn links to Vim documentation into *tags*.
+        if self.target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
+            tag = urlparse.urlparse(self.target).fragment
+            if tag:
+                tag = urllib.unquote(tag)
+                if text.find(tag) >= 0:
+                    text = text.replace(tag, '|%s|' % tag)
+                else:
+                    text = '%s (see |%s|)' % (text, tag)
+        # Add references as needed.
         if hasattr(self, 'reference'):
             text = "%s [%i]" % (text, self.reference.number)
         return text
