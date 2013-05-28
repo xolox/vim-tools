@@ -154,6 +154,9 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     make_parents_explicit(simple_tree)
     shift_headings(simple_tree)
     find_references(simple_tree, url)
+    # Add an "Introduction" heading to separate the table of contents from the
+    # start of the document text.
+    simple_tree.contents.insert(0, Heading(level=1, contents=[Text(contents=["Introduction"])]))
     tag_headings(simple_tree, filename)
     generate_table_of_contents(simple_tree)
     # XXX Write the AST to disk (for debugging).
