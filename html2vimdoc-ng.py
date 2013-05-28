@@ -183,10 +183,21 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     return vimdoc
 
 def select_title(tree, title):
+    """
+    If the caller didn't specify a help file title, we'll try to extract it
+    from the HTML <title> or the first <h1> element. Regardless, we'll remove
+    the first <h1> element because it's usually the page title (other headings
+    are nested below it so the table of contents becomes a bit awkward :-).
+    """
+    # Improvise a document title?
     if not title:
         elements = tree.findAll(('title', 'h1'))
         if elements:
             title = ''.join(elements[0].findAll(text=True))
+    # Remove the first top level heading from the tree.
+    headings = tree.findAll('h1')
+    if headings:
+        headings[0].extract()
     return title
 
 def deduplicate_delimiters(output):
