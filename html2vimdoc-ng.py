@@ -605,12 +605,18 @@ class List(BlockLevelNode):
         # First pass: Render the child nodes and pick the right delimiter.
         items = []
         delimiter = OutputDelimiter('\n')
+        num_lines = 0
         for node in self.contents:
             if isinstance(node, ListItem):
                 text = node.render(number=len(items) + 1, **kw)
                 items.append(text)
-                if any('\n' in s for s in text if isinstance(s, basestring)):
-                    delimiter = OutputDelimiter('\n\n')
+                for x in text:
+                    if isinstance(x, basestring):
+                        num_lines += x.count('\n')
+                num_lines += 1
+        logger.debug("num_lines=%i, #items=%i, ratio=%.2f", num_lines, len(items), num_lines / float(len(items)))
+        if (num_lines / float(len(items))) > 1.5:
+            delimiter = OutputDelimiter('\n\n')
         # Second pass: Combine the delimiters & rendered child nodes.
         output = [self.start_delimiter]
         for i, item in enumerate(items):
