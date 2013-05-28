@@ -272,7 +272,11 @@ def tag_headings(root, filename):
     Generate Vim help file tags for headings.
     """
     tagged_headings = {}
+    # Use base name of filename of help file as prefix (scope) for tags.
     prefix = re.sub(r'\.txt$', '', filename)
+    logger.debug("Vim help file name without file extension: %r", prefix)
+    # If the base name ends in a version number, we'll strip it.
+    prefix = re.sub(r'-\d+(\.\d+)*$', '', prefix)
     logger.debug("Tagging headings using prefix %r ..", prefix)
     for node in walk_tree(root, Heading):
         logger.debug("Selecting tag for heading: %s", node)
