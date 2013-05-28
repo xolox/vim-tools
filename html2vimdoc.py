@@ -1,457 +1,1079 @@
 #!/usr/bin/env python
 
-# TODO Don't add link targets inside code blocks!
+# Missing features:
+# TODO Find tag references in text and mark them.
+# TODO Support for <table> elements.
+#
+# Finding the right abstractions:
+# FIXME Quirky mix of classes and functions?
+# FIXME The OutputDelimiter stuff is a bit crazy, but I kind of need it? Complexity :-(
 
 """
-Convert HTML documents to Vim help files.
-
-Author: Peter Odding <peter@peterodding.com>
-Last Change: November 12, 2012
-Homepage: http://github.com/xolox/vim-tools
-License: MIT
-
-The Python script "html2vimdoc" converts HTML documents to Vim's plain text
-help file format. Help tags are generated for headings so that you can quickly
-jump to any section of the generated documentation. The Beautiful Soup HTML
-parser is used so that even malformed HTML can be converted. When given
-Markdown input it will be automatically converted to HTML using the Python
-Markdown module.
-
-On Debian/Ubuntu you can install the Python modules that are used in this
-script by executing the following command in a terminal:
-
-  sudo apt-get install python-beautifulsoup python-markdown
-
-To-do list:
- - Refactor code to be more logical
- - Automatic hyper links in paragraphs
- - Compact small lists, expand large ones
-"""
-
-usage = """
 html2vimdoc [OPTIONS] [LOCATION]
 
-Convert HTML documents to Vim help files. When LOCATION is
-given it is assumed to be the filename or URL of the input,
-if --url is given that URL will be used, otherwise the
-script reads from standard input. The generated Vim help
-file is written to standard output.
+Convert HTML (and Markdown) documents to Vim help files. When LOCATION is given
+it is assumed to be the filename or URL of the input, if --url is given that
+URL will be used, otherwise the script reads from standard input. The generated
+Vim help file is written to standard output.
 
 Valid options:
 
-  -h, --help       show this message and exit
   -f, --file=NAME  name of generated help file (embedded
                    in Vim help file as first defined tag)
-  -t, --title=STR  title of the generated help file
+  -t, --title=STR  title of generated help file
   -u, --url=ADDR   URL of document (to detect relative links)
+  -p, --preview    preview generated Vim help file in Vim
+  -h, --help       show this message and exit
+
+This program tries to produce reasonable output given only an HTML or Markdown
+document as input, but you can change most defaults with the command line
+options listed above.
+
+There are several dependencies that need to be installed to run this program.
+The easiest way to install them is in a Python virtual environment:
+
+  # Create the virtual environment.
+  virtualenv html2vimdoc
+
+  # Install the dependencies.
+  html2vimdoc/bin/pip install beautifulsoup coloredlogs
+
+  # Run the program.
+  html2vimdoc/bin/python ./html2vimdoc.py --help
+
 """
 
 # Standard library modules.
+import collections
 import getopt
+import logging
 import os
 import re
 import sys
-from textwrap import dedent
+import textwrap
 import urllib
+import urlparse
 
-# Extra dependencies.
-from BeautifulSoup import BeautifulSoup, Comment, UnicodeDammit
+# External dependency, install with:
+#   sudo apt-get install python-beautifulsoup
+#   pip install beautifulsoup
+from BeautifulSoup import BeautifulSoup, NavigableString, UnicodeDammit
+
+# External dependency, install with:
+#  pip install coloredlogs
+import coloredlogs
+
+# External dependency, bundled because it's not on PyPi.
+import libs.soupselect as soupselect
+
+# Sensible defaults (you probably shouldn't change these).
+TEXT_WIDTH = 79
+SHIFT_WIDTH = 2
+
+# Initialize the logging subsystem.
+logger = logging.getLogger()
+logger.setLevel(logging.DEBUG)
+logger.addHandler(coloredlogs.ColoredStreamHandler())
+
+# Mapping of HTML element names to custom Node types.
+name_to_type_mapping = {}
 
 def main():
-  filename, title, url, arguments = parse_args(sys.argv[1:])
-  filename, url, text = get_input(filename, url, arguments)
-  print html2vimdoc(text, filename=filename, title=title, url=url)
-
-def html2vimdoc(html, filename='', title='', url=''):
-  """ This function performs the conversion from HTML to Vim help file. """
-  title, firstlevel, tree, refs = parse_html(html, title, url)
-  blocks = simplify_tree(tree, [])
-  output = []
-  if filename or title:
-    line = []
-    if filename:
-      line.append('*' + filename + '*')
-    if title:
-      line.append(title)
-    output.append('  '.join(line))
-  basename = os.path.splitext(filename)[0]
-  parts = basename.split('-')
-  if len(parts) == 2 and re.match(r'^\d+(\.\d+)*$', parts[1]):
-    basename = parts[0]
-  tags = []
-
-  # Write a table of contents.
-  print_heading('Contents', output, tags, '=', basename)
-  lastlevel = 0
-  counters = [0]
-  toc = []
-  for item in [('h%i' % firstlevel, 'Introduction')] + blocks:
-    if item[0] in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
-      level = int(item[0][1])
-      text = compact(item[1])
-      anchor = heading_to_anchor(basename, text)
-      if level > lastlevel:
-        counters.append(0)
-      elif level < lastlevel:
-        counters.pop()
-      counters[-1] += 1
-      entry = ' ' * (level - 1) + str(counters[-1]) + '. ' + text
-      if anchor and anchor in entry:
-        entry = replace_quoted(entry, anchor, '|%s|' % anchor)
-      elif anchor:
-        padding = max(1, 78 - len(entry) - len(anchor))
-        entry += ' ' * padding + '|' + anchor + '|'
-      toc.append(entry)
-      lastlevel = level
-  output.append('\n'.join(toc))
-
-  print_heading('Introduction', output, tags, '=', basename)
-  for item in blocks:
-    print_block(item, output, tags, firstlevel, basename)
-  if refs:
-    print_heading('References', output, tags, '=', basename)
-    refs = [(refnum, url) for url, refnum in refs.iteritems()]
-    lines = []
-    for refnum, url in sorted(refs):
-      lines.append('[%i] %s' % (refnum, url))
-    output.append('\n'.join(lines))
-  output.append('vim: ft=help')
-  text = '\n\n'.join(output)
-  for tag in tags:
-    # FIXME |links| don't work in headings
-    pattern = "([^|])'(%s)'([^|])" % tag
-    text = re.sub(pattern, r'\1|\2|\3', text)
-  return text
+    preview, filename, title, url, arguments = parse_args(sys.argv[1:])
+    filename, url, text = get_input(filename, url, arguments)
+    vimdoc = html2vimdoc(text, title=title, filename=filename, url=url)
+    output = vimdoc.encode('utf-8')
+    if preview:
+        os.popen("gvim -c 'set nomod' -", 'w').write(output)
+    else:
+        print output
 
 def parse_args(argv):
-  """ Parse command line arguments given to html2vimdoc. """
-  filename, title, url = '', '', ''
-  try:
-    options, arguments = getopt.getopt(argv, 'hf:t:u:', ['file=', 'title=', 'help', ])
-  except getopt.GetoptError, err:
-    print str(err)
-    print usage.strip()
-    sys.exit(1)
-  for option, value in options:
-    if option in ('-h', '--help'):
-      print usage.strip()
-      sys.exit(0)
-    elif option in ('-f', '--file'):
-      filename = value
-    elif option in ('-t', '--title'):
-      title = value
-    elif option in ('-u', '--url'):
-      url = value
-    else:
-      assert False, "Unknown option"
-  return filename, title, url, arguments
+    """
+    Parse the command line arguments given to html2vimdoc.
+    """
+    preview = False
+    filename = ''
+    title = ''
+    url = ''
+    try:
+        options, arguments = getopt.getopt(argv, 'f:t:u:ph', ['file=',
+            'title=', 'url=', 'preview', 'help'])
+    except getopt.GetoptError, err:
+        print str(err)
+        print __doc__.strip()
+        sys.exit(1)
+    for option, value in options:
+        if option in ('-f', '--file'):
+            filename = value
+        elif option in ('-t', '--title'):
+            title = value
+        elif option in ('-u', '--url'):
+            url = value
+        elif option in ('-p', '--preview'):
+            preview = True
+        elif option in ('-h', '--help'):
+            print __doc__.strip()
+            sys.exit(0)
+        else:
+            assert False, "Unknown option"
+    return preview, filename, title, url, arguments
 
 def get_input(filename, url, args):
-  """ Get text to be converted from standard input, path name or URL. """
-  if not url and not args:
-    text = sys.stdin.read()
-  else:
-    location = args and args[0] or url
+    """
+    Get text to be converted from standard input, path name or URL.
+    """
+    if not url and not args:
+        text = sys.stdin.read()
+    else:
+        location = args[0] if args else url
     if not filename:
-      # Generate embedded filename from base name of input document.
-      filename = os.path.splitext(os.path.basename(location))[0] + '.txt'
-    if not url and '://' in location:
-      # Positional argument was used with same meaning as --url.
-      url = location
+        # Generate embedded filename from base name of input document.
+        filename = os.path.basename(location)
+        filename = os.path.splitext(filename)[0] + '.txt'
+    if '://' in location and not url:
+        # Positional argument was used with same meaning as --url.
+        url = location
     handle = urllib.urlopen(location)
     text = handle.read()
     handle.close()
     if location.lower().endswith(('.md', '.mkd', '.mkdn', '.mdown', '.markdown')):
-      text = markdown_to_html(text)
-  return filename, url, text
+        text = markdown_to_html(text)
+    return filename, url, text
 
 def markdown_to_html(text):
-  """ When the input is Markdown, convert it to HTML so we can parse that. """
-  # The Python Markdown module only accepts Unicode and ASCII strings but I
-  # save my Markdown documents in the UTF-8 encoding. That's why I use
-  # UnicodeDammit to give me Unicode when possible.
-  from markdown import markdown
-  return markdown(UnicodeDammit(text).unicode)
+    """
+    When the input is Markdown, convert it to HTML so we can parse that.
+    """
+    # We import the markdown module here so that the markdown module is not
+    # required to use html2vimdoc when the input is HTML.
+    from markdown import markdown
+    # The Python Markdown module only accepts Unicode and ASCII strings, but we
+    # don't know what the encoding of the Markdown text is. BeautifulSoup comes
+    # to the rescue with the aptly named UnicodeDammit class :-).
+    return markdown(UnicodeDammit(text).unicode)
 
-def parse_html(contents, title, url):
-  """ Parse HTML input using Beautiful Soup parser. """
-  # Decode hexadecimal entities because Beautiful Soup doesn't support them :-|
-  contents = re.sub(r'&#x([0-9A-Fa-f]+);', lambda n: chr(int(n.group(1), 16)), contents)
-  tree = BeautifulSoup(contents, convertEntities = BeautifulSoup.ALL_ENTITIES)
-  # Restrict conversion to content text.
-  root = tree.find(id = 'content')
-  if not root:
-    try:
-      root = tree.html.body
-    except:
-      # Don't break when html.body doesn't exist.
-      root = tree
-  # Count top level headings, find help file title.
-  headings = root.findAll('h1')
-  if headings:
+def html2vimdoc(html, title='', filename='', url='', content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
+    """
+    Convert HTML documents to the Vim help file format.
+    """
+    html = decode_hexadecimal_entities(html)
+    tree = BeautifulSoup(html, convertEntities=BeautifulSoup.ALL_ENTITIES)
+    title = select_title(tree, title)
+    ignore_given_selectors(tree, selectors_to_ignore)
+    root = find_root_node(tree, content_selector)
+    simple_tree = simplify_node(root)
+    make_parents_explicit(simple_tree)
+    shift_headings(simple_tree)
+    find_references(simple_tree, url)
+    # Add an "Introduction" heading to separate the table of contents from the
+    # start of the document text.
+    simple_tree.contents.insert(0, Heading(level=1, contents=[Text(contents=["Introduction"])]))
+    tag_headings(simple_tree, filename)
+    generate_table_of_contents(simple_tree)
+    prune_empty_blocks(simple_tree)
+    vimdoc = simple_tree.render(indent=0)
+    output = list(flatten(vimdoc))
+    logger.debug("Output strings before deduplication: %s", list(unicode(v) for v in output))
+    deduplicate_delimiters(output)
+    logger.debug("Output strings after deduplication: %s", list(unicode(v) for v in output))
+    # Render the final text.
+    vimdoc = u"".join(unicode(v) for v in output)
+    # Add the first line with the file tag and/or document title?
+    if title or filename:
+        firstline = []
+        if filename:
+            firstline.append("*%s*" % filename)
+        if title:
+            firstline.append(title)
+        vimdoc = "%s\n\n%s" % ("  ".join(firstline), vimdoc)
+    # Add a mode line at the end of the document.
+    if modeline and not modeline.isspace():
+        vimdoc += "\n\n" + modeline
+    return vimdoc
+
+def select_title(tree, title):
+    """
+    If the caller didn't specify a help file title, we'll try to extract it
+    from the HTML <title> or the first <h1> element. Regardless, we'll remove
+    the first <h1> element because it's usually the page title (other headings
+    are nested below it so the table of contents becomes a bit awkward :-).
+    """
+    # Improvise a document title?
     if not title:
-      title = compact(node_text(headings[0]))
-    # Remove the first top-level heading from the parse tree.
-    headings[0].extract()
-  # Remove HTML comments from parse tree.
-  [c.extract() for c in root.findAll(text = lambda n: isinstance(n, Comment))]
-  # XXX Hacks for the Lua/APR binding documentation: Remove <a href=..>#</a>
-  # and <span>test coverage: xx%</span> elements from headings.
-  [n.extract() for n in root.findAll('a') if node_text(n) == '#']
-  [n.extract() for n in root.findAll('span') if 'test coverage' in node_text(n)]
-  # Transform <code> fragments into 'single quoted strings'.
-  def quote(node):
-    return "'%s'" % node_text(node).strip("'")
-  [n.replaceWith(quote(n)) for n in root.findAll('code') if n.parent.name != 'pre']
-  # Transform hyper links and images into textual references.
-  refs = {}
-  for node in root.findAll(('a', 'img')):
-    if node.name == 'img':
-      img_refnum = len(refs) + 1
-      refs[node['src']] = img_refnum
-      node.insert(len(node), u'    %s, see reference [%i]' % (node['alt'] or 'Image', img_refnum))
-    else:
-      try:
-        link_target = node['href']
-      except:
-        # Ignore <a> without href="".
-        continue
-      link_text = node_text(node)
-      # Try to transform relative into absolute links.
-      if url and not re.match(r'^\w+:', link_target):
-        link_target = os.path.join(url, link_target)
-      if (url and os.path.relpath(link_target, url) or link_target).startswith('#'):
-        # Skip links to page anchors on the same page.
-        continue
-      elif link_target == 'http://www.vim.org/':
-        # Don't add a reference to the Vim homepage in Vim help files.
-        continue
-      elif link_target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
-        # Turn links to Vim documentation into *tags* without reference.
-        try:
-          anchor = urllib.unquote(link_target.split('#')[1])
-          if anchor and link_text.find(anchor) >= 0:
-            node.replaceWith(link_text.replace(anchor, '|%s|' % anchor))
-          else:
-            node.replaceWith('%s (see |%s|)' % (link_text, anchor))
-          continue
-        except:
-          pass
-      # Exclude relative URLs and literal URLs from list of references.
-      if '://' in link_target and link_target != link_text:
-        link_target = urllib.unquote(link_target)
-        if link_target in refs:
-          link_refnum = refs[link_target]
-        else:
-          link_refnum = len(refs) + 1
-          refs[link_target] = link_refnum
-        node.insert(len(node), u' [%i]' % link_refnum)
-  # Simplify parse tree into list of headings/paragraphs/blocks.
-  return title, len(headings) == 1 and 2 or 1, root, refs
+        elements = tree.findAll(('title', 'h1'))
+        if elements:
+            title = ''.join(elements[0].findAll(text=True))
+    # Remove the first top level heading from the tree.
+    headings = tree.findAll('h1')
+    if headings:
+        headings[0].extract()
+    return title
 
-def simplify_tree(node, output, para_id=0):
-  """ Convert the parse tree generated by Beautiful Soup into a list of block elements. """
-  name = getattr(node, 'name', None)
-  if name == 'p':
-    # Update current paragraph identity.
-    para_id = id(node)
-  if name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
-    output.append((name, node_text(node)))
-  elif name == 'pre':
-    text = node_text(node)
-    text = trim_lines(text.rstrip())
-    output.append((name, dedent(text)))
-  elif name == 'table':
-    rows = []
-    for row in node.findAll('tr'):
-      columns = []
-      for column in row.findAll({ 'th': True, 'td': True }):
-        columns.append(compact(node_text(column)))
-      rows.append(columns)
-    output.append((name, rows))
-  elif name in ('li', 'dt', 'dd'):
-    output.append((name, compact(node_text(node))))
-  elif not isinstance(node, unicode):
-    for child in node:
-      simplify_tree(child, output, para_id)
-  else:
-    text = compact(node)
-    if text:
-      if output:
-        lastitem = output[len(output) - 1]
-        if lastitem[1] == para_id:
-          newitem = ('text', para_id, lastitem[2] + node)
-          output[len(output) - 1] = newitem
-          return output
-      output.append(('text', para_id, node))
-  return output
-
-def print_block(item, output, tags, level, filename):
-  """ Convert a single block to the Vim help file format. """
-  # Headings.
-  if item[0] == 'h1':
-    print_heading(item[1], output, tags, '=', filename)
-  elif item[0] == 'h2':
-    print_heading(item[1], output, tags, level == 2 and '=' or '-', filename)
-  elif item[0] in ('h3', 'h4', 'h5', 'h6'):
-    print_heading(item[1], output, tags, '-', filename)
-  elif item[0] == 'pre':
-    # Join the previous and current block because the '>' marker is hidden
-    # and can visually be considered an empty line.
-    prevblock = output[len(output)-1].rstrip()
-    thisblock = '    ' + item[1].replace('\n', '\n' + '    ')
-    output[len(output)-1] = prevblock + '\n>\n' + thisblock
-  elif item[0] == 'table':
-    output.append(wrap_table(item[1]))
-  else:
-    text = item[item[0] == 'text' and 2 or 1]
-    text = trim_lines(text)
-    if item[0] in ('li', 'dt', 'dd'):
-      text = ' - ' + text
-    # Replace copyright signs with the text `copyright' (this is very specific
-    # to the README.md files I write for my own Vim plug-ins).
-    text = text.replace(u'\xa9', 'Copyright')
-    # Make the Lua manual more useful by rewriting paragraph numbers into help tags.
-    text = re.sub(u'\xa7(\\d+(\\.\\d+)*)', '|lua-\\1|', text)
-    text = wrap_text(text)
-    output.append(text)
-
-def print_heading(text, output, tags, marker, filename):
-  """ Convert a heading (of any level) to the Vim help file format. """
-  lines = [marker * 79]
-  heading = compact(text)
-  anchor = heading_to_anchor(filename, heading)
-  # Never create duplicate tags.
-  if anchor in tags:
-    anchor = ''
-  else:
-    tags.append(anchor)
-  if anchor and anchor in heading:
-    lines.append(replace_quoted(heading, anchor, '*%s*' % anchor))
-  else:
-    if anchor:
-      lines.append('%080s' % ('*' + anchor + '*'))
-    lines.append(heading + ' ~')
-  output.append('\n'.join(lines))
-
-def replace_quoted(text, find, replace):
-  quoted = "'%s'" % find
-  search = quoted if quoted in text else find
-  return text.replace(search, replace)
-
-def heading_to_anchor(basename, text):
-  """
-  Try to find a unique anchor indicated in the source HTML with
-  <code> and in the format we have here with 'single-quotes'.
-  """
-  m = re.search(r"'(\S+)'", text)
-  if m:
-    return m.group(1)
-  # We didn't find a unique anchor, make something up ;-)
-  if len(text.split()) < 6:
-    anchor = re.sub('[^a-z0-9_().:]+', '-', text.lower())
-    anchor = re.sub('^the-', '', anchor)
-    anchor = re.sub('-the-', '-', anchor)
-    anchor = anchor.strip('-')
-    if anchor and basename:
-      basename = basename.lower()
-      if basename not in anchor:
-          anchor = basename + '-' + anchor
-    return anchor
-
-def wrap_text(text, width=78, startofline=''):
-  """ Re-flow paragraph by adding hard line breaks. """
-  lines = []
-  cline = startofline
-  indent = re.match(r'^\s*', text).group(0)
-  for word in text.split():
-    wordlen = len(word.replace('|', ''))
-    test = len(cline.replace('|', '')) + wordlen + 1
-    if test <= width or wordlen >= width / 3 and len(cline) < (width / 0.8) and test < (width * 1.2):
-      delimiter = re.match('[.?!]$', cline) != None and word[0].isupper() and '  ' or ' '
-      cline = len(cline) != 0 and (cline + delimiter + word) or word
-    else:
-      lines.append(cline)
-      # Indent continuation lines of wrapped list items.
-      if cline.startswith('- ') or cline.startswith('   '):
-        cline = '   ' + word
-      else:
-        cline = startofline + word
-  if len(cline) > 0:
-    lines.append(cline)
-  return indent + '\n'.join(lines)
-
-def wrap_table(rows, width=78, padding='  '):
-  """ Generate ASCII table with wrapped columns. """
-  numcols = len(rows[0])
-  widths = [0] * numcols
-  padwidth = numcols * len(padding)
-  for columns in rows:
-    for colnum, text in enumerate(columns):
-      widths[colnum] = max(widths[colnum], len(text))
-  remaining_width = width - padwidth
-  remaining_columns = numcols
-  if sum(widths) + padwidth > width:
-    for colnum, colwidth in enumerate(widths):
-      widths[colnum] = min(colwidth, remaining_width / remaining_columns)
-      remaining_width -= widths[colnum]
-      remaining_columns -= 1
-    # TODO This can be improved
-    #widths = [width / numcols] * numcols
-  output = []
-  for row in rows:
-    columns = []
-    # Wrap individual columns.
-    for colnum, text in enumerate(row):
-      # Wrap text in column.
-      lines = []
-      line = ''
-      for word in text.split():
-        if len(line) + len(word) <= widths[colnum]:
-          line += (line and ' ' or '') + word
-        else:
-          lines.append(line)
-          line = word
-      if line:
-        lines.append(line)
-      # Left justify, pad columns with spaces.
-      for i, line in enumerate(lines):
-        lines[i] = line.ljust(widths[colnum])
-      columns.append(lines)
-    # Combine wrapped columns.
+def deduplicate_delimiters(output):
+    # Deduplicate redundant block delimiters from the rendered Vim help text.
     i = 0
-    while i < max(len(column) for column in columns):
-      line = []
-      for colnum, column in enumerate(columns):
-        if i < len(column):
-          line.append(column[i])
+    while i < len(output) - 1:
+        if isinstance(output[i], OutputDelimiter) and isinstance(output[i + 1], OutputDelimiter):
+            if output[i].string.isspace() and not output[i + 1].string.isspace():
+                output.pop(i)
+                continue
+            elif output[i + 1].string.isspace() and not output[i].string.isspace():
+                output.pop(i + 1)
+                continue
+            elif len(output[i].string) < len(output[i + 1].string):
+                output.pop(i)
+                continue
+            elif len(output[i].string) > len(output[i + 1].string):
+                output.pop(i + 1)
+                continue
+            elif output[i].string.isspace():
+                output.pop(i)
+                continue
+        i += 1
+    # Strip leading block delimiters.
+    while output and isinstance(output[0], OutputDelimiter) and output[0].string.isspace():
+        output.pop(0)
+    # Strip trailing block delimiters.
+    while output and isinstance(output[-1], OutputDelimiter) and output[-1].string.isspace():
+        output.pop(-1)
+
+def decode_hexadecimal_entities(html):
+    """
+    Based on my testing BeautifulSoup doesn't support hexadecimal HTML
+    entities, so we have to decode them ourselves :-(
+    """
+    # If we happen to decode an entity into one of these characters, we
+    # should never insert it literally into the HTML because we'll screw
+    # up the syntax.
+    unsafe_to_decode = {
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&apos;',
+            '&': '&amp;',
+    }
+    def decode_entity(match):
+        character = chr(int(match.group(1), 16))
+        return unsafe_to_decode.get(character, character)
+    return re.sub(r'&#x([0-9A-Fa-f]+);', decode_entity, html)
+
+def find_root_node(tree, selector):
+    """
+    Given a document tree generated by BeautifulSoup, find the most
+    specific document node that doesn't "lose any information" (i.e.
+    everything that we want to be included in the Vim help file) while
+    ignoring as much fluff as possible (e.g. headers, footers and
+    navigation menus included in the original HTML document).
+    """
+    # Try to find the root node using a CSS selector provided by the caller.
+    matches = soupselect.select(tree, selector)
+    if matches:
+        return matches[0]
+    # Otherwise we'll fall back to the <body> element.
+    try:
+        return tree.html.body
+    except:
+        # Don't break when html.body doesn't exist.
+        return tree
+
+def ignore_given_selectors(tree, selectors_to_ignore):
+    """
+    Remove all HTML elements matching any of the CSS selectors provided by
+    the caller from the parse tree generated by BeautifulSoup.
+    """
+    for selector in selectors_to_ignore:
+        for element in soupselect.select(tree, selector):
+            element.extract()
+
+def simplify_node(html_node):
+    """
+    Recursive function to simplify parse trees generated by BeautifulSoup into
+    something we can more easily convert into HTML.
+    """
+    # First we'll get text nodes out of the way since they're very common.
+    if isinstance(html_node, NavigableString):
+        text = html_node.string
+        internal_node = Text(contents=[text])
+        logger.debug("Mapping text %r -> %r", text, internal_node)
+        return internal_node
+    # Now we deal with all of the known & supported HTML elements.
+    name = getattr(html_node, 'name', None)
+    if name in name_to_type_mapping:
+        mapped_type = name_to_type_mapping[name]
+        internal_node = mapped_type.parse(html_node)
+        logger.debug("Mapping HTML element <%s> -> %r", name, internal_node)
+        return internal_node
+    # Finally we improvise, trying not to lose information.
+    internal_node = simplify_children(html_node)
+    logger.warn("Not a supported element, improvising: %r", internal_node)
+    return internal_node
+
+def simplify_children(node):
+    """
+    Simplify the child nodes of the given node taken from a parse tree
+    generated by BeautifulSoup.
+    """
+    contents = []
+    for child in getattr(node, 'contents', []):
+        contents.append(simplify_node(child))
+    if is_block_level(contents):
+        logger.debug("Sequence contains some block level elements")
+        return BlockLevelSequence(contents=contents)
+    else:
+        logger.debug("Sequence contains only inline elements")
+        return InlineSequence(contents=contents)
+
+def shift_headings(root):
+    """
+    Perform an intermediate pass over the simplified parse tree to shift
+    headings in such a way that top level headings have level 1.
+    """
+    # Find the largest headings (lowest level).
+    min_level = None
+    logger.debug("Finding largest headings ..")
+    for node in walk_tree(root, Heading):
+        if min_level is None:
+            min_level = node.level
+        elif node.level < min_level:
+            min_level = node.level
+    if min_level is None:
+        logger.debug("HTML document doesn't contain any headings?")
+        return
+    else:
+        logger.debug("Largest headings have level %i.", min_level)
+    # Shift the headings if necessary.
+    if min_level > 1:
+        to_subtract = min_level - 1
+        logger.debug("Shifting headings by %i levels.", to_subtract)
+        for node in walk_tree(root, Heading):
+            node.level -= to_subtract
+
+def tag_headings(root, filename):
+    """
+    Generate Vim help file tags for headings.
+    """
+    tagged_headings = {}
+    # Use base name of filename of help file as prefix (scope) for tags.
+    prefix = re.sub(r'\.txt$', '', filename)
+    logger.debug("Vim help file name without file extension: %r", prefix)
+    # If the base name ends in a version number, we'll strip it.
+    prefix = re.sub(r'-\d+(\.\d+)*$', '', prefix)
+    logger.debug("Tagging headings using prefix %r ..", prefix)
+    for node in walk_tree(root, Heading):
+        logger.debug("Selecting tag for heading: %s", node)
+        tag = node.tag_heading(tagged_headings, prefix)
+        if tag:
+            logger.debug("Found suitable tag: %s", tag)
+            tagged_headings[tag] = node
+
+def find_references(root, url):
+    """
+    Scan the document tree for hyper links. Each hyper link is given a unique
+    number so that it can be referenced inside the Vim help file. A new section
+    is appended to the tree which lists an overview of all references to hyper
+    links extracted from the HTML document.
+    """
+    # Mapping of hyper link targets to "Reference" objects.
+    by_target = {}
+    # Ordered list of "Reference" objects.
+    by_reference = []
+    logger.debug("Scanning parse tree for hyper links and other references ..")
+    for node in walk_tree(root, (HyperLink, Image)):
+        if isinstance(node, Image):
+            target = node.src
         else:
-          line.append(' ' * widths[colnum])
-      output.append('  ' + '  '.join(line))
-      i += 1
-  output = [line.rstrip() for line in output]
-  output[0] += ' ~'
-  return '\n'.join(output)
+            target = node.target
+        if not target:
+            continue
+        if target == 'http://www.vim.org/':
+            # Don't add a reference to the Vim homepage in Vim help files.
+            continue
+        if target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
+            # Don't add a reference to the online Vim documentation.
+            continue
+        # Try to convert relative URLs into absolute URLs.
+        if url and not re.match(r'^\w+:', target):
+            target = urlparse.urljoin(url, target)
+        # Now try to convert absolute URLs into relative URLs... This does
+        # actually make sense, but it sure sounds stupid :-p. All it really
+        # does is normalize URLs to a common format.
+        relative_target = target
+        if url:
+            relative_target = os.path.relpath(target, url)
+        if relative_target.startswith('#'):
+            # Skip links to page anchors on the same page.
+            continue
+        # Exclude literal URLs from list of references.
+        if target.replace('mailto:', '') == node.render(indent=0):
+            continue
+        # Make sure we don't duplicate references.
+        if target in by_target:
+            r = by_target[target]
+        else:
+            number = len(by_reference) + 1
+            logger.debug("Extracting reference #%i to %s ..", number, target)
+            r = Reference(number=number, target=target)
+            by_reference.append(r)
+            by_target[target] = r
+        node.reference = r
+    logger.debug("Found %i references.", len(by_reference))
+    if by_reference:
+        logger.debug("Generating 'References' section ..")
+        root.contents.append(Heading(level=1, contents=[Text(contents=["References"])]))
+        root.contents.extend(by_reference)
 
-def node_text(node):
-  """ Get all text contained by the given parse tree node. """
-  text = ''.join(node.findAll(text = True))
-  # HACK for Lua/APR binding documentation.
-  text = text.replace(u'\u2192', '->')
-  return text
+def generate_table_of_contents(root):
+    # 1. Generate List().
+    # 2. Insert in tree.
+    entries = []
+    counters = []
+    for heading in walk_tree(root, Heading):
+        logger.debug("Stack of counters before reset: %s", counters)
+        # Forget no longer relevant counters.
+        counters = counters[:heading.level]
+        logger.debug("Stack of counters after reset: %s", counters)
+        # Make the stack of counters big enough.
+        while len(counters) < heading.level:
+            counters.append(1)
+        logger.debug("Stack of counters after padding: %s", counters)
+        entries.append(TableOfContentsEntry(
+            number=counters[heading.level - 1],
+            text=compact(join_inline(heading.contents, indent=heading.level)),
+            indent=heading.level,
+            tag=getattr(heading, 'tag', None)))
+        counters[heading.level - 1] += 1
+    logger.debug("Table of contents: %s", entries)
+    root.contents.insert(0, Heading(level=1, contents=[Text(contents=["Contents"])]))
+    root.contents.insert(1, BlockLevelSequence(contents=entries))
 
-def trim_lines(s):
-  """ Trim empty, leading lines from the given string. """
-  return re.sub('^([ \t]*\n)+', '', s)
+def prune_empty_blocks(root):
+    """
+    Prune empty block level nodes from the tree.
+    """
+    def recurse(node):
+        if hasattr(node, 'contents'):
+            filtered_children = []
+            for child in node.contents:
+                recurse(child)
+                if child:
+                    filtered_children.append(child)
 
-def compact(s):
-  """ Compact sequences of whitespace into single spaces. """
-  return ' '.join(s.split())
+            node.contents = filtered_children
+    recurse(root)
+
+def make_parents_explicit(root):
+    """
+    Add links from child nodes to parent nodes.
+    """
+    def recurse(node, parent):
+        if isinstance(node, Node):
+            node.parent = parent
+            for child in getattr(node, 'contents', []):
+                recurse(child, node)
+    recurse(root, None)
+
+def walk_tree(root, *node_types):
+    """
+    Return a list of nodes (optionally filtered by type) ordered by the
+    original document order (i.e. the left to right, top to bottom reading
+    order of English text).
+    """
+    ordered_nodes = []
+    def recurse(node):
+        if not (node_types and not isinstance(node, node_types)):
+            ordered_nodes.append(node)
+        for child in getattr(node, 'contents', []):
+            recurse(child)
+    recurse(root)
+    return ordered_nodes
+
+# Objects to encapsulate output text with a bit of state.
+
+class OutputDelimiter(object):
+
+    def __init__(self, string):
+        self.string = string
+
+    def __unicode__(self):
+        return self.string
+
+    def __repr__(self):
+        return "OutputDelimiter(string=%r)" % self.string
+
+# Decorator for abstract syntax tree nodes.
+
+def html_element(*element_names):
+    """
+    Decorator to associate AST nodes and HTML nodes at the point where the AST
+    node is defined.
+    """
+    def wrap(c):
+        for name in element_names:
+            name_to_type_mapping[name] = c
+        return c
+    return wrap
+
+# Abstract parse tree nodes.
+
+class Node(object):
+
+    """
+    Abstract superclass for all parse tree nodes.
+    """
+
+    def __init__(self, **kw):
+        """
+        Short term hack for prototyping :-).
+        """
+        self.__dict__ = kw
+
+    def __iter__(self):
+        """
+        Short term hack to make it easy to walk the tree.
+        """
+        return iter(getattr(self, 'contents', []))
+
+    def __repr__(self):
+        """
+        Dumb but useful representation of parse tree for debugging purposes.
+        """
+        nodes = [repr(n) for n in getattr(self, 'contents', [])]
+        if not nodes:
+            contents = ""
+        elif len(nodes) == 1:
+            contents = nodes[0]
+        else:
+            contents = "\n" + ",\n".join(nodes)
+        return "%s(%s)" % (self.__class__.__name__, contents)
+
+    @classmethod
+    def parse(cls, html_node):
+        """
+        Default parse behavior: Just simplify any child nodes.
+        """
+        return cls(contents=simplify_children(html_node))
+
+    @property
+    def parents(self):
+        """
+        Generator that yields all parents of a node.
+        """
+        node = self
+        while node:
+            node = node.parent
+            yield node
+
+class BlockLevelNode(Node):
+    """
+    Abstract superclass for all block level parse tree nodes. Block level nodes
+    are the nodes which take care of indentation and line wrapping by
+    themselves.
+    """
+    start_delimiter = OutputDelimiter('\n\n')
+    end_delimiter = OutputDelimiter('\n\n')
+
+class InlineNode(Node):
+    """
+    Abstract superclass for all inline parse tree nodes. Inline nodes are the
+    nodes which are subject to indenting and line wrapping by the block level
+    nodes that contain them.
+    """
+    pass
+
+# Concrete parse tree nodes.
+
+class BlockLevelSequence(BlockLevelNode):
+
+    """
+    A sequence of one or more block level nodes.
+    """
+
+    def __nonzero__(self):
+        """
+        Make it possible to recognize and prune empty block level sequences.
+        """
+        return any(self.contents)
+
+    def render(self, **kw):
+        text = join_blocks(self.contents, **kw)
+        return [self.start_delimiter, text, self.end_delimiter]
+
+@html_element('h1', 'h2', 'h3', 'h4', 'h5', 'h6')
+class Heading(BlockLevelNode):
+
+    """
+    Block level node to represent headings. Maps to the HTML elements ``<h1>``
+    to ``<h6>``, however Vim help files have only two levels of headings so
+    during conversion some information about the structure of the original
+    document is lost.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return Heading(level=int(html_node.name[1]),
+                       contents=simplify_children(html_node))
+
+    def tag_heading(self, existing_tags, prefix):
+        # Look for a <code> element (indicating a source code
+        # entity) whose text has not yet been used as a tag.
+        matches = walk_tree(self, CodeFragment)
+        logger.debug("Found %i code fragments inside heading: %s", len(matches), matches)
+        for node in matches:
+            tag = create_tag(node.text, prefix=prefix, is_code=True)
+            logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, node.text)
+            if tag not in existing_tags:
+                # Found a usable tag.
+                self.tag = tag
+                return tag
+        # Fall back to a tag generated from the heading's text.
+        text = join_inline(self.contents, indent=0)
+        tag = create_tag(text, prefix=prefix, is_code=False)
+        logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, text)
+        if tag not in existing_tags:
+            self.tag = tag
+            return tag
+
+    def render(self, **kw):
+        logger.debug("Rendering heading: %s", self)
+        # We start with a line containing the marker symbol for headings,
+        # repeated on the full line. The symbol depends on the level.
+        lines = [('=' if self.level == 1 else '-') * TEXT_WIDTH]
+        # Render the heading's text.
+        text = join_inline(self.contents, **kw)
+        suffix = ' ~'
+        # Add a section tag?
+        if hasattr(self, 'tag'):
+            tag = "*%s*" % self.tag
+            if self.tag in text:
+                # If the heading references the tag literally, we'll just use
+                # that (instead of having to add a redundant tag).
+                text = text.replace(self.tag, tag)
+                # References to tags are actually invalid inside proper
+                # headings, but since we also added the marker line at the top
+                # of the heading, we can leave off the "~" symbol and forgo the
+                # additional highlighting.
+                suffix = ''
+            else:
+                # If we can't reference the tag literally, we'll add the
+                # section tag on the second line, aligned to the right.
+                prefix = ' ' * (TEXT_WIDTH - len(tag))
+                lines.append(prefix + tag)
+        # Prepare the prefix & suffix for each line, hard wrap the
+        # heading text and apply the prefix & suffix to each line.
+        prefix = ' ' * kw['indent']
+        width = TEXT_WIDTH - len(prefix) - len(suffix)
+        lines.extend(prefix + l + suffix for l in textwrap.wrap(text, width=width))
+        return [self.start_delimiter, "\n".join(lines), self.end_delimiter]
+
+@html_element('p')
+class Paragraph(BlockLevelNode):
+
+    """
+    Block level node to represent paragraphs of text.
+    Maps to the HTML element ``<p>``.
+    """
+
+    def render(self, **kw):
+        # If the paragraph contains only an image (possible wrapped in another
+        # element) the paragraph is indented by a minimum of two spaces.
+        if len(self.contents) == 1 and len(walk_tree(self, Image)) == 1:
+            kw['indent'] = max(2, kw['indent'])
+        return [self.start_delimiter, join_inline(self.contents, **kw), self.end_delimiter]
+
+@html_element('pre')
+class PreformattedText(BlockLevelNode):
+
+    """
+    Block level node to represent preformatted text.
+    Maps to the HTML element ``<pre>``.
+    """
+
+    # Vim help file markers for preformatted text.
+    start_delimiter = OutputDelimiter('\n>\n')
+    end_delimiter = OutputDelimiter('\n<\n')
+
+    @staticmethod
+    def parse(html_node):
+        # This is the easiest way to get all of the text in the preformatted
+        # block while ignoring HTML elements (what would we do with them?).
+        text = ''.join(html_node.findAll(text=True))
+        # Remove common indentation from the original text.
+        text = textwrap.dedent(text)
+        # Remove leading/trailing empty lines.
+        lines = text.splitlines()
+        while lines and not lines[0].strip():
+            lines.pop(0)
+        while lines and not lines[-1].strip():
+            lines.pop(-1)
+        return PreformattedText(contents=["\n".join(lines)])
+
+    def render(self, **kw):
+        prefix = ' ' * max(kw['indent'], 2)
+        lines = self.contents[0].splitlines()
+        text = "\n".join(prefix + line for line in lines)
+        return [self.start_delimiter, text, self.end_delimiter]
+
+@html_element('ul', 'ol')
+class List(BlockLevelNode):
+
+    """
+    Block level node to represent ordered and unordered lists.
+    Maps to the HTML elements ``<ol>`` and ``<ul>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return List(ordered=(html_node.name=='ol'),
+                    contents=simplify_children(html_node))
+
+    def render(self, **kw):
+        # First pass: Render the child nodes and pick the right delimiter.
+        items = []
+        delimiter = OutputDelimiter('\n')
+        num_lines = 0
+        for node in self.contents:
+            if isinstance(node, ListItem):
+                text = node.render(number=len(items) + 1, **kw)
+                items.append(text)
+                for x in text:
+                    if isinstance(x, basestring):
+                        num_lines += x.count('\n')
+                num_lines += 1
+        logger.debug("num_lines=%i, #items=%i, ratio=%.2f", num_lines, len(items), num_lines / float(len(items)))
+        if (num_lines / float(len(items))) > 1.5:
+            delimiter = OutputDelimiter('\n\n')
+        # Second pass: Combine the delimiters & rendered child nodes.
+        output = [self.start_delimiter]
+        for i, item in enumerate(items):
+            if i > 0:
+                output.append(delimiter)
+            output.extend(item)
+        output.append(self.end_delimiter)
+        return output
+
+@html_element('li')
+class ListItem(BlockLevelNode):
+
+    """
+    Block level node to represent list items.
+    Maps to the HTML element ``<li>``.
+    """
+
+    def render(self, number, **kw):
+        # Get the original prefix (indent).
+        prefix = ' ' * kw['indent']
+        # Append the list item bullet.
+        if self.parent.ordered:
+            prefix += '%i. ' % number
+        else:
+            prefix += '- '
+        # Update indent for child nodes.
+        kw['indent'] = len(prefix)
+        # Render the child node(s).
+        text = join_smart(self.contents, **kw)
+        # Make sure we're dealing with a list of output delimiters and text.
+        if not isinstance(text, list):
+            text = [text]
+        # Ignore (remove) any leading output delimiters from the
+        # text (only when the delimiter itself is whitespace).
+        while text and isinstance(text[0], OutputDelimiter) and text[0].string.isspace():
+            text.pop(0)
+        # Remove leading indent from first text node.
+        if text and isinstance(text[0], (str, unicode)):
+            for i in xrange(len(prefix)):
+                if text[0] and text[0][0].isspace():
+                    text[0] = text[0][1:]
+        # Prefix the list item bullet and return the result.
+        # XXX We explicitly *don't* add any output delimiters here, because
+        # they will be chosen *after* all of the list items have been rendered.
+        return [prefix] + text
+
+# TODO Parse and render tabular data.
+#@html_element('table')
+
+class Table(BlockLevelNode):
+
+    """
+    Block level node to represent tabular data.
+    Maps to the HTML element ``<table>``.
+    """
+
+    def render(self, **kw):
+        return ''
+
+class Reference(BlockLevelNode):
+
+    """
+    Block level node to represent a reference to a hyper link.
+    """
+
+    start_delimiter = OutputDelimiter('\n')
+    end_delimiter = OutputDelimiter('\n')
+
+    def __repr__(self):
+        return "Reference(number=%i, target=%r)" % (self.number, self.target)
+
+    def render(self, **kw):
+        text = "[%i] %s" % (self.number, self.target)
+        return [self.start_delimiter, text, self.end_delimiter]
+
+class TableOfContentsEntry(BlockLevelNode):
+
+    """
+    Block level node to represent a line in the table of contents.
+    """
+
+    start_delimiter = OutputDelimiter('\n')
+    end_delimiter = OutputDelimiter('\n')
+
+    def __repr__(self):
+        return "TableOfContentsEntry(number=%i, text=%r, indent=%i)" % (self.number, self.text, self.indent)
+
+    def render(self, **kw):
+        text = ''
+        # Render the indentation.
+        text += " " * self.indent
+        # Render the counter.
+        text += "%i. " % self.number
+        # Render the text.
+        text += self.text
+        if self.tag:
+            tag = "|%s|" % self.tag
+            # Render the padding.
+            padding = max(1, TEXT_WIDTH - len(text) - len(tag))
+            text += " " * padding
+            # Render the tag.
+            text += tag
+        return [self.start_delimiter, text, self.end_delimiter]
+
+class InlineSequence(InlineNode):
+
+    """
+    Inline node to represent a sequence of one or more inline nodes.
+    """
+
+    def __nonzero__(self):
+        """
+        Make it possible to recognize and prune empty inline sequences.
+        """
+        return any(self.contents)
+
+    def __len__(self):
+        """
+        Needed by HyperLink.render().
+        """
+        return len(self.contents)
+
+    def render(self, **kw):
+        return join_inline(self.contents, **kw)
+
+@html_element('img')
+class Image(InlineNode):
+
+    """
+    Inline node to represent images.
+    Maps to the HTML element ``<img>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return Image(src=html_node.get('src', ''),
+                     alt=html_node.get('alt', ''))
+
+    def __nonzero__(self):
+        return bool(self.src or self.alt)
+
+    def __repr__(self):
+        return "Image(src=%r, alt=%r)" % (self.src, self.alt)
+
+    def render(self, **kw):
+        if hasattr(self, 'reference'):
+            text = "%s (see reference [%i])" % (self.alt, self.reference.number)
+        else:
+            text = self.alt or '(unlabeled image)'
+        return "Image: " + text
+
+@html_element('a')
+class HyperLink(InlineNode):
+
+    """
+    Inline node to represent hyper links.
+    Maps to the HTML element ``<a>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return HyperLink(target=html_node.get('href', ''),
+                         contents=simplify_children(html_node))
+
+    def __repr__(self):
+        text = self.render(indent=0)
+        return "HyperLink(text=%r, target=%r, reference=%r)" % (text, self.target, getattr(self, 'reference', None))
+
+    def render(self, **kw):
+        images = walk_tree(self, Image)
+        if len(self.contents) == 1 and len(images) == 1:
+            # If the hyper link contains a single child node which is
+            # (or contains) an image, we add a reference for the hyper
+            # link but not the image.
+            raw_text = "Image: " + images[0].alt
+            text = join_inline([Text(contents=[raw_text])], **kw)
+        else:
+            text = join_inline(self.contents, **kw)
+        # Turn links to Vim documentation into *tags*.
+        if self.target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
+            tag = urlparse.urlparse(self.target).fragment
+            # Tags are not valid inside headings, so we have to check.
+            if tag and not any(isinstance(n, Heading) for n in self.parents):
+                tag = urllib.unquote(tag)
+                if text.find(tag) >= 0:
+                    text = text.replace(tag, '|%s|' % tag)
+                else:
+                    text = '%s (see |%s|)' % (text, tag)
+        # Add references as needed.
+        if hasattr(self, 'reference'):
+            text = "%s [%i]" % (text, self.reference.number)
+        return text
+
+@html_element('code', 'tt')
+class CodeFragment(InlineNode):
+
+    """
+    Inline node to represent code fragments.
+    Maps to the HTML elements ``<code>`` and ``<tt>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return CodeFragment(text=''.join(html_node.findAll(text=True)))
+
+    def __repr__(self):
+        return "CodeFragment(text=%rr)" % self.text
+
+    def render(self, **kw):
+        if re.search('[` \t\r\n]', self.text) or isinstance(self.parent, Heading):
+            return self.text
+        else:
+            return "`%s`" % self.text
+
+class Text(InlineNode):
+
+    """
+    Inline node to represent a sequence of text.
+    """
+
+    def __nonzero__(self):
+        """
+        Make it possible to recognize and prune empty text nodes.
+        """
+        text = self.contents[0]
+        return text and not text.isspace()
+
+    def render(self, **kw):
+        return self.contents[0]
+
+def is_block_level(contents):
+    """
+    Return True if any of the nodes in the given sequence is a block level
+    node, False otherwise.
+    """
+    return any(isinstance(n, BlockLevelNode) for n in contents)
+
+def join_smart(nodes, **kw):
+    """
+    Join a sequence of block level and/or inline nodes into a single string.
+    """
+    if is_block_level(nodes):
+        return join_blocks(nodes, **kw)
+    else:
+        return join_inline(nodes, **kw)
+
+def join_blocks(nodes, **kw):
+    """
+    Join a sequence of block level nodes into a single string.
+    """
+    output = []
+    for node in nodes:
+        if isinstance(node, InlineNode):
+            # Without this 'hack' whitespace compaction & line wrapping would
+            # not be applied to inline nodes which are direct children of list
+            # items that also have children which are block level nodes (that
+            # was a mouthful).
+            output.append(join_inline([node], **kw))
+        else:
+            output.extend(node.render(**kw))
+    return output
+
+def join_inline(nodes, **kw):
+    """
+    Join a sequence of inline nodes into a single string.
+    """
+    prefix = ' ' * kw['indent']
+    logger.debug("Inline nodes: %s", nodes)
+    rendered_nodes = [n.render(**kw) for n in nodes]
+    return "\n".join(textwrap.wrap(compact("".join(rendered_nodes)),
+                                   initial_indent=prefix,
+                                   subsequent_indent=prefix,
+                                   width=TEXT_WIDTH - len(prefix)))
+
+def compact(text):
+    """
+    Compact whitespace in a string (also trims whitespace from the sides).
+    """
+    return " ".join(text.split())
+
+def create_tag(text, prefix, is_code):
+    """
+    Convert arbitrary text to a Vim help file tag.
+    """
+    if is_code:
+        # Preserve the case of programming language identifiers.
+        anchor = text
+        # Replace operators with words so we don't lose too much information.
+        for op, word in (('+', 'add'), ('-', 'sub'), ('*', 'mul'), ('/', 'div')):
+            anchor = anchor.replace(op, ' %s ' % word)
+        # Replace parenthesized expressions with just the parentheses
+        # (intent: to not include function arguments in tags).
+        anchor = re.sub(r'\s*\(.*?\)', '()', anchor)
+    else:
+        # Lowercase regular English expressions.
+        anchor = text.lower()
+        # Remove parenthesized expressions.
+        anchor = re.sub(r'\(.*?\)', '', anchor)
+        # Remove apostrophes (replacing them with dashes is silly).
+        anchor = re.sub(r"(\w)'(\w)", r'\1\2', anchor)
+        # Remove "insignificant" colons.
+        anchor = re.sub(r':\s+', ' ', anchor)
+        # Remove fluff words.
+        tokens = []
+        for token in anchor.split():
+            if token not in ('a', 'the', 'and', 'some'):
+                tokens.append(token)
+        anchor = " ".join(tokens)
+    # Apply the prefix only when it's not completely redundant.
+    if not is_code and not prefix.lower() in anchor.lower():
+        anchor = prefix + '-' + anchor
+    # Tags can only contain a limited set of characters.
+    if is_code:
+        anchor = re.sub('[^A-Za-z0-9_().:]+', '-', anchor)
+    else:
+        anchor = re.sub('[^A-Za-z0-9_().]+', '-', anchor)
+    # Trim leading/trailing sanitized characters.
+    return anchor.strip('-')
+
+def flatten(l):
+    """
+    From http://stackoverflow.com/a/2158532/788200.
+    """
+    for el in l:
+        if isinstance(el, collections.Iterable) and not isinstance(el, basestring):
+            for sub in flatten(el):
+                yield sub
+        else:
+            yield el
 
 if __name__ == '__main__':
-  import codecs
-  streamWriter = codecs.lookup('utf-8')[-1]
-  sys.stdout = streamWriter(sys.stdout)
-  main()
+    main()
 
-# vim: ts=2 sw=2 et
+# vim: ft=python ts=4 sw=4 et
