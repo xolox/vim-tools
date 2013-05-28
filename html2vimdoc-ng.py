@@ -10,44 +10,40 @@
 # FIXME Node joining is all over the place... What if every node can indicate how it wants to be joined with other nodes?
 
 """
-html2vimdoc
-===========
+html2vimdoc [OPTIONS] [LOCATION]
 
-The ``html2vimdoc`` module takes HTML documents and converts them to Vim help
-files. It tries to produce Vim help files that are a pleasure to read while
-preserving as much information as possible from the original HTML document.
-Here are some of the design goals of ``html2vimdoc``:
+Convert HTML (and Markdown) documents to Vim help files. When LOCATION is given
+it is assumed to be the filename or URL of the input, if --url is given that
+URL will be used, otherwise the script reads from standard input. The generated
+Vim help file is written to standard output.
 
-- Flexible HTML parsing powered by ``BeautifulSoup``;
-- Support for nested block level elements, e.g. nested lists;
-- Automatically generates a table of contents based on headings;
-- Translates hyper links into external references (which are included in an
-  appendix) and rewrites hyper links that point to Vim's online documentation
-  into help tags which can be followed inside Vim.
+Valid options:
 
-How does it work?
------------------
+  -f, --file=NAME  name of generated help file (embedded
+                   in Vim help file as first defined tag)
+  -t, --title=STR  title of generated help file
+  -u, --url=ADDR   URL of document (to detect relative links)
+  -h, --help       show this message and exit
 
-The ``html2vimdoc`` module works in three phases:
-
-1. It parses the HTML document using ``BeautifulSoup``;
-2. It converts the parse tree produced by ``BeautifulSoup`` into a
-   simpler format that makes it easier to convert to a Vim help file;
-3. It generates a Vim help file by walking through the simplified parse tree
-   using recursion.
+This program tries to produce reasonable output given only an HTML or Markdown
+document as input, but you can change most defaults with the command line
+options listed above.
 """
 
 # Standard library modules.
 import collections
+import getopt
 import logging
+import os
 import re
+import sys
 import textwrap
 import urllib
 
 # External dependency, install with:
 #   sudo apt-get install python-beautifulsoup
 #   pip install beautifulsoup
-from BeautifulSoup import BeautifulSoup, NavigableString
+from BeautifulSoup import BeautifulSoup, NavigableString, UnicodeDammit
 
 # External dependency, install with:
 #  pip install coloredlogs
@@ -69,17 +65,70 @@ logger.addHandler(coloredlogs.ColoredStreamHandler())
 name_to_type_mapping = {}
 
 def main():
-    filename = 'test.html'
-    filename = 'demo/apr-0.17.html'
-    filename = 'demo/lpeg-0.10.html'
-    filename = 'testdata/YouCompleteMe-README.html'
-    with open(filename) as handle:
-        html = handle.read()
-        html = re.sub(r'test coverage: \S+', '', html)
-        output = html2vimdoc(html, filename='ycm.txt', selectors_to_ignore=['h3 a[class=anchor]'])
-        print output.encode('utf-8')
+    filename, title, url, arguments = parse_args(sys.argv[1:])
+    filename, url, text = get_input(filename, url, arguments)
+    print html2vimdoc(text, title=title, filename=filename, url=url)
 
-def html2vimdoc(html, title='', filename='', content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
+def parse_args(argv):
+    """
+    Parse the command line arguments given to html2vimdoc.
+    """
+    filename, title, url = '', '', ''
+    try:
+        options, arguments = getopt.getopt(argv, 'f:t:u:h', ['file=', 'title=', 'url=', 'help'])
+    except getopt.GetoptError, err:
+        print str(err)
+        print __doc__.strip()
+        sys.exit(1)
+    for option, value in options:
+        if option in ('-f', '--file'):
+            filename = value
+        elif option in ('-t', '--title'):
+            title = value
+        elif option in ('-u', '--url'):
+            url = value
+        elif option in ('-h', '--help'):
+            print __doc__.strip()
+            sys.exit(0)
+        else:
+            assert False, "Unknown option"
+    return filename, title, url, arguments
+
+def get_input(filename, url, args):
+    """
+    Get text to be converted from standard input, path name or URL.
+    """
+    if not url and not args:
+        text = sys.stdin.read()
+    else:
+        location = args[0] if args else url
+    if not filename:
+        # Generate embedded filename from base name of input document.
+        filename = os.path.basename(location)
+        filename = os.path.splitext(filename)[0] + '.txt'
+    if '://' in location and not url:
+        # Positional argument was used with same meaning as --url.
+        url = location
+    handle = urllib.urlopen(location)
+    text = handle.read()
+    handle.close()
+    if location.lower().endswith(('.md', '.mkd', '.mkdn', '.mdown', '.markdown')):
+        text = markdown_to_html(text)
+    return filename, url, text
+
+def markdown_to_html(text):
+    """
+    When the input is Markdown, convert it to HTML so we can parse that.
+    """
+    # We import the markdown module here so that the markdown module is not
+    # required to use html2vimdoc when the input is HTML.
+    from markdown import markdown
+    # The Python Markdown module only accepts Unicode and ASCII strings, but we
+    # don't know what the encoding of the Markdown text is. BeautifulSoup comes
+    # to the rescue with the aptly named UnicodeDammit class :-).
+    return markdown(UnicodeDammit(text).unicode)
+
+def html2vimdoc(html, title='', filename='', url='', content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
     """
     Convert HTML documents to the Vim help file format.
     """
@@ -91,7 +140,7 @@ def html2vimdoc(html, title='', filename='', content_selector='#content', select
     simple_tree = simplify_node(root)
     make_parents_explicit(simple_tree)
     shift_headings(simple_tree)
-    find_references(simple_tree)
+    find_references(simple_tree, url)
     tag_headings(simple_tree, filename)
     generate_table_of_contents(simple_tree)
     # XXX Write the AST to disk (for debugging).
@@ -285,13 +334,14 @@ def tag_headings(root, filename):
             logger.debug("Found suitable tag: %s", tag)
             tagged_headings[tag] = node
 
-def find_references(root):
+def find_references(root, url):
     """
     Scan the document tree for hyper links. Each hyper link is given a unique
     number so that it can be referenced inside the Vim help file. A new section
     is appended to the tree which lists an overview of all references to hyper
     links extracted from the HTML document.
     """
+    # TODO Use the "url" argument to detect relative URLs.
     # Mapping of hyper link targets to "Reference" objects.
     by_target = {}
     # Ordered list of "Reference" objects.
