@@ -23,6 +23,7 @@ Valid options:
                    in Vim help file as first defined tag)
   -t, --title=STR  title of generated help file
   -u, --url=ADDR   URL of document (to detect relative links)
+  -p, --preview    preview generated Vim help file in Vim
   -h, --help       show this message and exit
 
 This program tries to produce reasonable output given only an HTML or Markdown
@@ -65,17 +66,26 @@ logger.addHandler(coloredlogs.ColoredStreamHandler())
 name_to_type_mapping = {}
 
 def main():
-    filename, title, url, arguments = parse_args(sys.argv[1:])
+    preview, filename, title, url, arguments = parse_args(sys.argv[1:])
     filename, url, text = get_input(filename, url, arguments)
-    print html2vimdoc(text, title=title, filename=filename, url=url)
+    vimdoc = html2vimdoc(text, title=title, filename=filename, url=url)
+    output = vimdoc.encode('utf-8')
+    if preview:
+        os.popen("gvim -c 'set nomod' -", 'w').write(output)
+    else:
+        print output
 
 def parse_args(argv):
     """
     Parse the command line arguments given to html2vimdoc.
     """
-    filename, title, url = '', '', ''
+    preview = False
+    filename = ''
+    title = ''
+    url = ''
     try:
-        options, arguments = getopt.getopt(argv, 'f:t:u:h', ['file=', 'title=', 'url=', 'help'])
+        options, arguments = getopt.getopt(argv, 'f:t:u:ph', ['file=',
+            'title=', 'url=', 'preview', 'help'])
     except getopt.GetoptError, err:
         print str(err)
         print __doc__.strip()
@@ -87,12 +97,14 @@ def parse_args(argv):
             title = value
         elif option in ('-u', '--url'):
             url = value
+        elif option in ('-p', '--preview'):
+            preview = True
         elif option in ('-h', '--help'):
             print __doc__.strip()
             sys.exit(0)
         else:
             assert False, "Unknown option"
-    return filename, title, url, arguments
+    return preview, filename, title, url, arguments
 
 def get_input(filename, url, args):
     """
