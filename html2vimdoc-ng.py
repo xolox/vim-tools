@@ -550,6 +550,16 @@ class Node(object):
         """
         return cls(contents=simplify_children(html_node))
 
+    @property
+    def parents(self):
+        """
+        Generator that yields all parents of a node.
+        """
+        node = self
+        while node:
+            node = node.parent
+            yield node
+
 class BlockLevelNode(Node):
     """
     Abstract superclass for all block level parse tree nodes. Block level nodes
@@ -910,7 +920,8 @@ class HyperLink(InlineNode):
         # Turn links to Vim documentation into *tags*.
         if self.target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
             tag = urlparse.urlparse(self.target).fragment
-            if tag:
+            # Tags are not valid inside headings, so we have to check.
+            if tag and not any(isinstance(n, Heading) for n in self.parents):
                 tag = urllib.unquote(tag)
                 if text.find(tag) >= 0:
                     text = text.replace(tag, '|%s|' % tag)
