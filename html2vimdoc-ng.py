@@ -1050,8 +1050,11 @@ def create_tag(text, prefix, is_code):
     # Apply the prefix only when it's not completely redundant.
     if not is_code and not prefix.lower() in anchor.lower():
         anchor = prefix + '-' + anchor
-    # Make sure the combination if prefix + anchor makes sense.
-    anchor = re.sub('[^A-Za-z0-9_().:]+', '-', anchor)
+    # Tags can only contain a limited set of characters.
+    if is_code:
+        anchor = re.sub('[^A-Za-z0-9_().:]+', '-', anchor)
+    else:
+        anchor = re.sub('[^A-Za-z0-9_().]+', '-', anchor)
     # Trim leading/trailing sanitized characters.
     return anchor.strip('-')
 
