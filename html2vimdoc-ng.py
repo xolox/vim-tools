@@ -609,32 +609,46 @@ class Heading(BlockLevelNode):
             tag = create_tag(node.text, prefix=prefix, is_code=True)
             logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, node.text)
             if tag not in existing_tags:
+                # Found a usable tag.
                 self.tag = tag
-                break
-        if not hasattr(self, 'tag'):
-            text = join_inline(self.contents, indent=0)
-            tag = create_tag(text, prefix=prefix, is_code=False)
-            logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, text)
-            if tag not in existing_tags:
-                self.tag = tag
-        return getattr(self, 'tag', None)
+                return tag
+        # Fall back to a tag generated from the heading's text.
+        text = join_inline(self.contents, indent=0)
+        tag = create_tag(text, prefix=prefix, is_code=False)
+        logger.debug("Checking if %r (from %r) can be used as a tag ..", tag, text)
+        if tag not in existing_tags:
+            self.tag = tag
+            return tag
 
     def render(self, **kw):
+        logger.debug("Rendering heading: %s", self)
         # We start with a line containing the marker symbol for headings,
         # repeated on the full line. The symbol depends on the level.
         lines = [('=' if self.level == 1 else '-') * TEXT_WIDTH]
-        # On the second line, aligned to the right, we add a section tag.
-        logger.debug("Rendering heading: %s", self)
+        # Render the heading's text.
+        text = join_inline(self.contents, **kw)
+        suffix = ' ~'
+        # Add a section tag?
         if hasattr(self, 'tag'):
-            anchor = "*%s*" % self.tag
-            prefix = ' ' * (TEXT_WIDTH - len(anchor))
-            lines.append(prefix + anchor)
+            tag = "*%s*" % self.tag
+            if self.tag in text:
+                # If the heading references the tag literally, we'll just use
+                # that (instead of having to add a redundant tag).
+                text = text.replace(self.tag, tag)
+                # References to tags are actually invalid inside proper
+                # headings, but since we also added the marker line at the top
+                # of the heading, we can leave off the "~" symbol and forgo the
+                # additional highlighting.
+                suffix = ''
+            else:
+                # If we can't reference the tag literally, we'll add the
+                # section tag on the second line, aligned to the right.
+                prefix = ' ' * (TEXT_WIDTH - len(tag))
+                lines.append(prefix + tag)
         # Prepare the prefix & suffix for each line, hard wrap the
         # heading text and apply the prefix & suffix to each line.
         prefix = ' ' * kw['indent']
-        suffix = ' ~'
         width = TEXT_WIDTH - len(prefix) - len(suffix)
-        text = join_inline(self.contents, **kw)
         lines.extend(prefix + l + suffix for l in textwrap.wrap(text, width=width))
         return [self.start_delimiter, "\n".join(lines), self.end_delimiter]
 
@@ -1023,9 +1037,9 @@ def create_tag(text, prefix, is_code):
                 tokens.append(token)
         anchor = " ".join(tokens)
     # Apply the prefix only when it's not completely redundant.
-    if not anchor.lower().startswith(prefix.lower()):
+    if not is_code and not prefix.lower() in anchor.lower():
         anchor = prefix + '-' + anchor
-    # Tag names can contain only a small subset of characters.
+    # Make sure the combination if prefix + anchor makes sense.
     anchor = re.sub('[^A-Za-z0-9_().:]+', '-', anchor)
     # Trim leading/trailing sanitized characters.
     return anchor.strip('-')
