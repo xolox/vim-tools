@@ -957,10 +957,18 @@ class CodeFragment(InlineNode):
         return "CodeFragment(text=%rr)" % self.text
 
     def render(self, **kw):
-        if re.search('[` \t\r\n]', self.text) or isinstance(self.parent, Heading):
+        # $VIMRUNTIME/syntax/help.vim doesn't actually define very rich
+        # highlighting: We can use `back ticks` to highlight code fragments,
+        # but only when the code fragment doesn't contain spaces... Also, this
+        # doesn't work in headings. To still make the transition between
+        # regular text and code fragments visible to the user, we'll improvise
+        # with single or double quotes.
+        if re.match('^[` \t\r\n]+$', self.text) and not any(isinstance(n, Heading) for n in self.parents):
             return self.text
+        elif self.text.find("'") >= 0:
+            return '"%s"' % self.text
         else:
-            return "`%s`" % self.text
+            return "'%s'" % self.text
 
 class Text(InlineNode):
 
