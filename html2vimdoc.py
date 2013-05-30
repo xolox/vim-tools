@@ -970,7 +970,7 @@ class CodeFragment(InlineNode):
         return CodeFragment(text=''.join(html_node.findAll(text=True)))
 
     def __repr__(self):
-        return "CodeFragment(text=%rr)" % self.text
+        return "CodeFragment(text=%r)" % self.text
 
     def render(self, **kw):
         # $VIMRUNTIME/syntax/help.vim doesn't actually define very rich
@@ -985,6 +985,44 @@ class CodeFragment(InlineNode):
             return '"%s"' % self.text
         else:
             return "'%s'" % self.text
+
+@html_element('i', 'em')
+class Emphasis(InlineNode):
+
+    """
+    Inline node to represent emphasis.
+    Maps to the HTML elements ``<i>`` and ``<em>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return Emphasis(contents=simplify_children(html_node))
+
+    def __repr__(self):
+        return "Emphasis(contents=%r)" % self.contents
+
+    def render(self, **kw):
+        return "_%s_" % join_inline(self.contents, **kw)
+
+@html_element('b', 'strong')
+class Strong(InlineNode):
+
+    """
+    Inline node to represent strong / bold font.
+    Maps to the HTML elements ``<b>`` and ``<strong>``.
+    """
+
+    @staticmethod
+    def parse(html_node):
+        return Strong(contents=simplify_children(html_node))
+
+    def __repr__(self):
+        return "Strong(contents=%r)" % self.contents
+
+    def render(self, **kw):
+        # We use **double** asterisks because a word enclosed in *single*
+        # asterisks already has a meaning: It's a help tag definition.
+        return "**%s**" % join_inline(self.contents, **kw)
 
 class Text(InlineNode):
 
