@@ -25,6 +25,7 @@ Valid options:
   -x, --ext=NAME   enable the named Markdown extension
                    (only relevant when input is Markdown)
   -p, --preview    preview generated Vim help file in Vim
+  -v, --verbose    make more noise (a lot of noise)
   -h, --help       show this message and exit
 
 This program tries to produce reasonable output given only an HTML or Markdown
@@ -74,7 +75,7 @@ SHIFT_WIDTH = 2
 
 # Initialize the logging subsystem.
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 logger.addHandler(coloredlogs.ColoredStreamHandler())
 
 # Mapping of HTML element names to custom Node types.
@@ -88,6 +89,7 @@ def main():
     filename, url, text = get_input(filename, url, arguments, markdown_extensions)
     vimdoc = html2vimdoc(text, title=title, filename=filename, url=url)
     output = vimdoc.encode('utf-8')
+    logger.info("Done!")
     if preview:
         os.popen("gvim -c 'set nomod' -", 'w').write(output)
     else:
@@ -103,8 +105,8 @@ def parse_args(argv):
     title = ''
     url = ''
     try:
-        options, arguments = getopt.getopt(argv, 'f:t:u:x:ph', ['file=',
-            'title=', 'url=', 'ext=', 'preview', 'help'])
+        options, arguments = getopt.getopt(argv, 'f:t:u:x:pvh', ['file=',
+            'title=', 'url=', 'ext=', 'preview', 'verbose', 'help'])
     except getopt.GetoptError, err:
         print str(err)
         print __doc__.strip()
@@ -120,6 +122,8 @@ def parse_args(argv):
             markdown_extensions.append(value)
         elif option in ('-p', '--preview'):
             preview = True
+        elif option in ('-v', '--verbose'):
+            logger.setLevel(logging.DEBUG)
         elif option in ('-h', '--help'):
             print __doc__.strip()
             sys.exit(0)
@@ -131,21 +135,24 @@ def get_input(filename, url, args, markdown_extensions):
     """
     Get text to be converted from standard input, path name or URL.
     """
+    source = ''
     if not url and not args:
+        logger.info("Reading HTML from standard input ..")
         text = sys.stdin.read()
     else:
-        location = args[0] if args else url
-    if not filename:
-        # Generate embedded filename from base name of input document.
-        filename = os.path.basename(location)
-        filename = os.path.splitext(filename)[0] + '.txt'
-    if '://' in location and not url:
-        # Positional argument was used with same meaning as --url.
-        url = location
-    handle = urllib.urlopen(location)
-    text = handle.read()
-    handle.close()
-    if location.lower().endswith(('.md', '.mkd', '.mkdn', '.mdown', '.markdown')):
+        source = args[0] if args else url
+        logger.info("Reading input from %s ..", source)
+        handle = urllib.urlopen(source)
+        text = handle.read()
+        handle.close()
+        if '://' in source and not url:
+            # Positional argument was used with same meaning as --url.
+            url = source
+        if not filename:
+            # Generate embedded filename from base name of input document.
+            filename = os.path.basename(source)
+            filename = os.path.splitext(filename)[0] + '.txt'
+    if source.lower().endswith(('.md', '.mkd', '.mkdn', '.mdown', '.markdown')):
         text = markdown_to_html(text, markdown_extensions)
     return filename, url, text
 
@@ -153,6 +160,7 @@ def markdown_to_html(text, markdown_extensions):
     """
     When the input is Markdown, convert it to HTML so we can parse that.
     """
+    logger.info("Converting Markdown to HTML using extensions: %s.", ", ".join(sorted(markdown_extensions)))
     # We import the markdown module here so that the markdown module is not
     # required to use html2vimdoc when the input is HTML.
     from markdown import markdown
@@ -165,8 +173,10 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     """
     Convert HTML documents to the Vim help file format.
     """
+    logger.info("Parsing HTML ..")
     html = decode_hexadecimal_entities(html)
     tree = BeautifulSoup(html, convertEntities=BeautifulSoup.ALL_ENTITIES)
+    logger.info("Transforming contents ..")
     title = select_title(tree, title)
     ignore_given_selectors(tree, selectors_to_ignore)
     root = find_root_node(tree, content_selector)
@@ -178,8 +188,10 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     # start of the document text.
     simple_tree.contents.insert(0, Heading(level=1, contents=[Text(contents=["Introduction"])]))
     tag_headings(simple_tree, filename)
+    logger.info("Generating table of contents ..")
     generate_table_of_contents(simple_tree)
     prune_empty_blocks(simple_tree)
+    logger.info("Rendering output ..")
     vimdoc = simple_tree.render(indent=0)
     output = list(flatten(vimdoc))
     logger.debug("Output strings before deduplication: %s", list(unicode(v) for v in output))
@@ -316,7 +328,7 @@ def simplify_node(html_node):
         return internal_node
     # Finally we improvise, trying not to lose information.
     internal_node = simplify_children(html_node)
-    logger.warn("Not a supported element, improvising: %r", internal_node)
+    logger.debug("Not a supported element! Improvising to preserve content.")
     return internal_node
 
 def simplify_children(node):
