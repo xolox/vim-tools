@@ -81,6 +81,9 @@ logger.addHandler(coloredlogs.ColoredStreamHandler())
 name_to_type_mapping = {}
 
 def main():
+    """
+    Command line interface for html2vimdoc.
+    """
     filename, title, url, arguments, preview, markdown_extensions = parse_args(sys.argv[1:])
     filename, url, text = get_input(filename, url, arguments, markdown_extensions)
     vimdoc = html2vimdoc(text, title=title, filename=filename, url=url)
@@ -216,7 +219,9 @@ def select_title(tree, title):
     return title
 
 def deduplicate_delimiters(output):
-    # Deduplicate redundant block delimiters from the rendered Vim help text.
+    """
+    Deduplicate redundant block delimiters from the rendered Vim help text.
+    """
     i = 0
     while i < len(output) - 1:
         if isinstance(output[i], OutputDelimiter) and isinstance(output[i + 1], OutputDelimiter):
@@ -429,8 +434,10 @@ def find_references(root, url):
         root.contents.extend(by_reference)
 
 def generate_table_of_contents(root):
-    # 1. Generate List().
-    # 2. Insert in tree.
+    """
+    Generate a table of contents for the Vim help file based on the headings
+    defined in the Markdown or HTML document provided by the user.
+    """
     entries = []
     counters = []
     for heading in walk_tree(root, Heading):
@@ -496,6 +503,15 @@ def walk_tree(root, *node_types):
 # Objects to encapsulate output text with a bit of state.
 
 class OutputDelimiter(object):
+
+    """
+    Trivial class to encapsulate output text (delimiters between the rendered
+    text of block level nodes) with a bit of state (to distinguish rendered
+    text from delimiters).
+
+    Note that most of the actual logic for handling of output delimiters is
+    currently contained in the function ``deduplicate_delimiters()``.
+    """
 
     def __init__(self, string):
         self.string = string
