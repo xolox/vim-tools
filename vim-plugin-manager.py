@@ -54,6 +54,10 @@ import mechanize
 #  pip install coloredlogs
 import coloredlogs
 
+# External dependency, install with:
+#  pip install verboselogs
+import verboselogs
+
 # External dependency bundled with the Vim plug-in manager.
 import html2vimdoc
 
@@ -151,7 +155,7 @@ class VimPluginManager:
         Initialize the logging subsystem.
         """
         # Create a logger instance.
-        self.logger = VerboseLogger('vim-plugin-manager')
+        self.logger = verboselogs.VerboseLogger('vim-plugin-manager')
         self.logger.setLevel(logging.DEBUG)
         # Add a handler for logging to a file.
         log_file = os.path.expanduser('~/.vim-plugin-manager.log')
@@ -682,30 +686,6 @@ class VimPluginManager:
                 return version_string
         msg = "Failed to determine last committed version of %s!"
         raise Exception, msg % plugin_name
-
-class VerboseLogger(logging.Logger):
-
-    """
-    Custom logger class that supports the additional logging level
-    "verbose" whose severity sits between "info" and "debug".
-    """
-
-    def __init__(self, *args, **kw):
-        """
-        Initialize the superclass and define the custom "verbose" log level.
-        """
-        logging.Logger.__init__(self, *args, **kw)
-        logging.VERBOSE = 15
-        logging.addLevelName(logging.VERBOSE, 'VERBOSE')
-
-    def verbose(self, *args, **kw):
-        """
-        Log a verbose message: A message that we would like to log in verbose
-        mode (-v) as a sort of high level debugging information (whereas
-        logger.debug() is used to log low level information). This method has
-        the same contract as the existing methods for logging a message.
-        """
-        self.log(logging.VERBOSE, *args, **kw)
 
 class ExternalCommandFailed(Exception):
 
