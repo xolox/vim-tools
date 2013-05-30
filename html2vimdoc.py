@@ -22,6 +22,8 @@ Valid options:
                    in Vim help file as first defined tag)
   -t, --title=STR  title of generated help file
   -u, --url=ADDR   URL of document (to detect relative links)
+  -x, --ext=NAME   enable the named Markdown extension
+                   (only relevant when input is Markdown)
   -p, --preview    preview generated Vim help file in Vim
   -h, --help       show this message and exit
 
@@ -79,8 +81,8 @@ logger.addHandler(coloredlogs.ColoredStreamHandler())
 name_to_type_mapping = {}
 
 def main():
-    preview, filename, title, url, arguments = parse_args(sys.argv[1:])
-    filename, url, text = get_input(filename, url, arguments)
+    filename, title, url, arguments, preview, markdown_extensions = parse_args(sys.argv[1:])
+    filename, url, text = get_input(filename, url, arguments, markdown_extensions)
     vimdoc = html2vimdoc(text, title=title, filename=filename, url=url)
     output = vimdoc.encode('utf-8')
     if preview:
@@ -93,12 +95,13 @@ def parse_args(argv):
     Parse the command line arguments given to html2vimdoc.
     """
     preview = False
+    markdown_extensions = []
     filename = ''
     title = ''
     url = ''
     try:
-        options, arguments = getopt.getopt(argv, 'f:t:u:ph', ['file=',
-            'title=', 'url=', 'preview', 'help'])
+        options, arguments = getopt.getopt(argv, 'f:t:u:x:ph', ['file=',
+            'title=', 'url=', 'ext=', 'preview', 'help'])
     except getopt.GetoptError, err:
         print str(err)
         print __doc__.strip()
@@ -110,6 +113,8 @@ def parse_args(argv):
             title = value
         elif option in ('-u', '--url'):
             url = value
+        elif option in ('-x', '--ext'):
+            markdown_extensions.append(value)
         elif option in ('-p', '--preview'):
             preview = True
         elif option in ('-h', '--help'):
@@ -117,9 +122,9 @@ def parse_args(argv):
             sys.exit(0)
         else:
             assert False, "Unknown option"
-    return preview, filename, title, url, arguments
+    return filename, title, url, arguments, preview, markdown_extensions
 
-def get_input(filename, url, args):
+def get_input(filename, url, args, markdown_extensions):
     """
     Get text to be converted from standard input, path name or URL.
     """
@@ -138,10 +143,10 @@ def get_input(filename, url, args):
     text = handle.read()
     handle.close()
     if location.lower().endswith(('.md', '.mkd', '.mkdn', '.mdown', '.markdown')):
-        text = markdown_to_html(text)
+        text = markdown_to_html(text, markdown_extensions)
     return filename, url, text
 
-def markdown_to_html(text):
+def markdown_to_html(text, markdown_extensions):
     """
     When the input is Markdown, convert it to HTML so we can parse that.
     """
@@ -151,7 +156,7 @@ def markdown_to_html(text):
     # The Python Markdown module only accepts Unicode and ASCII strings, but we
     # don't know what the encoding of the Markdown text is. BeautifulSoup comes
     # to the rescue with the aptly named UnicodeDammit class :-).
-    return markdown(UnicodeDammit(text).unicode)
+    return markdown(UnicodeDammit(text).unicode, extensions=markdown_extensions)
 
 def html2vimdoc(html, title='', filename='', url='', content_selector='#content', selectors_to_ignore=[], modeline='vim: ft=help'):
     """
