@@ -22,8 +22,9 @@ Valid options:
                    in Vim help file as first defined tag)
   -t, --title=STR  title of generated help file
   -u, --url=ADDR   URL of document (to detect relative links)
-  -x, --ext=NAME   enable the named Markdown extension
-                   (only relevant when input is Markdown)
+  -x, --ext=NAME   enable the named Markdown extension (only
+                   relevant when input is Markdown; the extension
+                   'fenced_code' is enabled by default)
   -p, --preview    preview generated Vim help file in Vim
   -v, --verbose    make more noise (a lot of noise)
   -h, --help       show this message and exit
@@ -100,7 +101,7 @@ def parse_args(argv):
     Parse the command line arguments given to html2vimdoc.
     """
     preview = False
-    markdown_extensions = []
+    markdown_extensions = ['fenced_code']
     filename = ''
     title = ''
     url = ''
