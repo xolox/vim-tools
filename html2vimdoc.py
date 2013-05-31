@@ -187,7 +187,10 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     # Add an "Introduction" heading to separate the table of contents from the
     # start of the document text.
     simple_tree.contents.insert(0, Heading(level=1, contents=[Text(text="Introduction")]))
-    tag_headings(simple_tree, filename)
+    logger.info("Tagging document headings ..")
+    tagged_headings = tag_headings(simple_tree, filename)
+    logger.info("Marking internal references ..")
+    simple_tree = mark_tags(simple_tree, tagged_headings)
     logger.info("Generating table of contents ..")
     generate_table_of_contents(simple_tree)
     make_parents_explicit(simple_tree)
@@ -388,6 +391,23 @@ def tag_headings(root, filename):
         if tag:
             logger.debug("Found suitable tag: %s", tag)
             tagged_headings[tag] = node
+    return tagged_headings
+
+def mark_tags(root, tags):
+    """
+    Mark references to tags defined in the document.
+    """
+    def recurse(node, parent):
+        if isinstance(node, CodeFragment):
+            if node.text in tags:
+                return Text(text="|%s|" % node.text, parent=parent)
+        if isinstance(node, SequenceNode):
+            new_contents = []
+            for child in node:
+                new_contents.append(recurse(child, node))
+            node.contents = new_contents
+        return node
+    return recurse(root, None)
 
 def find_references(root, url):
     """
@@ -558,6 +578,8 @@ class Node(object):
         """
         Short term hack for prototyping :-).
         """
+        if 'parent' not in kw:
+            kw['parent'] = None
         self.__dict__ = kw
 
     def __repr__(self):
