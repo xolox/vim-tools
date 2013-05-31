@@ -181,15 +181,15 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     ignore_given_selectors(tree, selectors_to_ignore)
     root = find_root_node(tree, content_selector)
     simple_tree = simplify_node(root)
-    make_parents_explicit(simple_tree)
     shift_headings(simple_tree)
     find_references(simple_tree, url)
     # Add an "Introduction" heading to separate the table of contents from the
     # start of the document text.
-    simple_tree.contents.insert(0, Heading(level=1, contents=[Text(contents=["Introduction"])]))
+    simple_tree.contents.insert(0, Heading(level=1, contents=[Text(text="Introduction")]))
     tag_headings(simple_tree, filename)
     logger.info("Generating table of contents ..")
     generate_table_of_contents(simple_tree)
+    make_parents_explicit(simple_tree)
     prune_empty_blocks(simple_tree)
     logger.info("Rendering output ..")
     vimdoc = simple_tree.render(indent=0)
@@ -315,9 +315,8 @@ def simplify_node(html_node):
     """
     # First we'll get text nodes out of the way since they're very common.
     if isinstance(html_node, NavigableString):
-        text = html_node.string
-        internal_node = Text(contents=[text])
-        logger.debug("Mapping text %r -> %r", text, internal_node)
+        internal_node = Text.parse(html_node)
+        logger.debug("Mapping text %r -> %r", html_node, internal_node)
         return internal_node
     # Now we deal with all of the known & supported HTML elements.
     name = getattr(html_node, 'name', None)
@@ -442,7 +441,7 @@ def find_references(root, url):
     logger.debug("Found %i references.", len(by_reference))
     if by_reference:
         logger.debug("Generating 'References' section ..")
-        root.contents.append(Heading(level=1, contents=[Text(contents=["References"])]))
+        root.contents.append(Heading(level=1, contents=[Text(text="References")]))
         root.contents.extend(by_reference)
 
 def generate_table_of_contents(root):
@@ -468,7 +467,7 @@ def generate_table_of_contents(root):
             tag=getattr(heading, 'tag', None)))
         counters[heading.level - 1] += 1
     logger.debug("Table of contents: %s", entries)
-    root.contents.insert(0, Heading(level=1, contents=[Text(contents=["Contents"])]))
+    root.contents.insert(0, Heading(level=1, contents=[Text(text="Contents")]))
     root.contents.insert(1, BlockLevelSequence(contents=entries))
 
 def prune_empty_blocks(root):
@@ -476,13 +475,12 @@ def prune_empty_blocks(root):
     Prune empty block level nodes from the tree.
     """
     def recurse(node):
-        if hasattr(node, 'contents'):
+        if isinstance(node, SequenceNode):
             filtered_children = []
-            for child in node.contents:
+            for child in node:
                 recurse(child)
                 if child:
                     filtered_children.append(child)
-
             node.contents = filtered_children
     recurse(root)
 
@@ -561,17 +559,11 @@ class Node(object):
         """
         self.__dict__ = kw
 
-    def __iter__(self):
-        """
-        Short term hack to make it easy to walk the tree.
-        """
-        return iter(getattr(self, 'contents', []))
-
     def __repr__(self):
         """
         Dumb but useful representation of parse tree for debugging purposes.
         """
-        nodes = [repr(n) for n in getattr(self, 'contents', [])]
+        nodes = [repr(n) for n in self]
         if not nodes:
             contents = ""
         elif len(nodes) == 1:
@@ -579,13 +571,6 @@ class Node(object):
         else:
             contents = "\n" + ",\n".join(nodes)
         return "%s(%s)" % (self.__class__.__name__, contents)
-
-    @classmethod
-    def parse(cls, html_node):
-        """
-        Default parse behavior: Just simplify any child nodes.
-        """
-        return cls(contents=simplify_children(html_node))
 
     @property
     def parents(self):
@@ -614,26 +599,53 @@ class InlineNode(Node):
     """
     pass
 
+class SequenceNode(Node):
+
+    """
+    Abstract superclass for nodes that contain a sequence of zero or more other
+    nodes.
+    """
+
+    @classmethod
+    def parse(cls, html_node):
+        """
+        Default parse behavior: Just simplify any child nodes.
+        """
+        return cls(contents=simplify_children(html_node))
+
+    def __nonzero__(self):
+        """
+        Make it possible to determine whether a subtree contains
+        only whitespace.
+        """
+        return any(bool(c) for c in self)
+
+    def __len__(self):
+        """
+        Needed by HyperLink.render().
+        """
+        return len(self.contents)
+
+    def __iter__(self):
+        """
+        Make it very simple to walk through the tree.
+        """
+        return iter(self.contents)
+
 # Concrete parse tree nodes.
 
-class BlockLevelSequence(BlockLevelNode):
+class BlockLevelSequence(BlockLevelNode, SequenceNode):
 
     """
     A sequence of one or more block level nodes.
     """
-
-    def __nonzero__(self):
-        """
-        Make it possible to recognize and prune empty block level sequences.
-        """
-        return any(self.contents)
 
     def render(self, **kw):
         text = join_blocks(self.contents, **kw)
         return [self.start_delimiter, text, self.end_delimiter]
 
 @html_element('h1', 'h2', 'h3', 'h4', 'h5', 'h6')
-class Heading(BlockLevelNode):
+class Heading(BlockLevelNode, SequenceNode):
 
     """
     Block level node to represent headings. Maps to the HTML elements ``<h1>``
@@ -700,7 +712,7 @@ class Heading(BlockLevelNode):
         return [self.start_delimiter, "\n".join(lines), self.end_delimiter]
 
 @html_element('p')
-class Paragraph(BlockLevelNode):
+class Paragraph(BlockLevelNode, SequenceNode):
 
     """
     Block level node to represent paragraphs of text.
@@ -739,16 +751,22 @@ class PreformattedText(BlockLevelNode):
             lines.pop(0)
         while lines and not lines[-1].strip():
             lines.pop(-1)
-        return PreformattedText(contents=["\n".join(lines)])
+        return PreformattedText(text="\n".join(lines))
+
+    def __repr__(self):
+        return "PreformattedText(text=%r)" % self.text
+
+    def __nonzero__(self):
+        return self.text and not self.text.isspace()
 
     def render(self, **kw):
         prefix = ' ' * max(kw['indent'], 2)
-        lines = self.contents[0].splitlines()
+        lines = self.text.splitlines()
         text = "\n".join(prefix + line for line in lines)
         return [self.start_delimiter, text, self.end_delimiter]
 
 @html_element('ul', 'ol')
-class List(BlockLevelNode):
+class List(BlockLevelNode, SequenceNode):
 
     """
     Block level node to represent ordered and unordered lists.
@@ -786,7 +804,7 @@ class List(BlockLevelNode):
         return output
 
 @html_element('li')
-class ListItem(BlockLevelNode):
+class ListItem(BlockLevelNode, SequenceNode):
 
     """
     Block level node to represent list items.
@@ -825,7 +843,7 @@ class ListItem(BlockLevelNode):
 # TODO Parse and render tabular data.
 #@html_element('table')
 
-class Table(BlockLevelNode):
+class Table(BlockLevelNode, SequenceNode):
 
     """
     Block level node to represent tabular data.
@@ -880,23 +898,11 @@ class TableOfContentsEntry(BlockLevelNode):
             text += tag
         return [self.start_delimiter, text, self.end_delimiter]
 
-class InlineSequence(InlineNode):
+class InlineSequence(InlineNode, SequenceNode):
 
     """
     Inline node to represent a sequence of one or more inline nodes.
     """
-
-    def __nonzero__(self):
-        """
-        Make it possible to recognize and prune empty inline sequences.
-        """
-        return any(self.contents)
-
-    def __len__(self):
-        """
-        Needed by HyperLink.render().
-        """
-        return len(self.contents)
 
     def render(self, **kw):
         return join_inline(self.contents, **kw)
@@ -928,7 +934,7 @@ class Image(InlineNode):
         return "Image: " + text
 
 @html_element('a')
-class HyperLink(InlineNode):
+class HyperLink(InlineNode, SequenceNode):
 
     """
     Inline node to represent hyper links.
@@ -951,7 +957,7 @@ class HyperLink(InlineNode):
             # (or contains) an image, we add a reference for the hyper
             # link but not the image.
             raw_text = "Image: " + images[0].alt
-            text = join_inline([Text(contents=[raw_text])], **kw)
+            text = join_inline([Text(text=raw_text)], **kw)
         else:
             text = join_inline(self.contents, **kw)
         # Turn links to Vim documentation into *tags*.
@@ -984,6 +990,9 @@ class CodeFragment(InlineNode):
     def __repr__(self):
         return "CodeFragment(text=%r)" % self.text
 
+    def __nonzero__(self):
+        return self.text and not self.text.isspace()
+
     def render(self, **kw):
         # $VIMRUNTIME/syntax/help.vim doesn't actually define very rich
         # highlighting: We can use `back ticks` to highlight code fragments,
@@ -999,16 +1008,12 @@ class CodeFragment(InlineNode):
             return "'%s'" % self.text
 
 @html_element('i', 'em')
-class Emphasis(InlineNode):
+class Emphasis(InlineNode, SequenceNode):
 
     """
     Inline node to represent emphasis.
     Maps to the HTML elements ``<i>`` and ``<em>``.
     """
-
-    @staticmethod
-    def parse(html_node):
-        return Emphasis(contents=simplify_children(html_node))
 
     def __repr__(self):
         return "Emphasis(contents=%r)" % self.contents
@@ -1017,16 +1022,12 @@ class Emphasis(InlineNode):
         return "_%s_" % join_inline(self.contents, **kw)
 
 @html_element('b', 'strong')
-class Strong(InlineNode):
+class Strong(InlineNode, SequenceNode):
 
     """
     Inline node to represent strong / bold font.
     Maps to the HTML elements ``<b>`` and ``<strong>``.
     """
-
-    @staticmethod
-    def parse(html_node):
-        return Strong(contents=simplify_children(html_node))
 
     def __repr__(self):
         return "Strong(contents=%r)" % self.contents
@@ -1042,15 +1043,23 @@ class Text(InlineNode):
     Inline node to represent a sequence of text.
     """
 
+    @staticmethod
+    def parse(html_node):
+        return Text(text=html_node.string)
+
+    def __repr__(self):
+        return "Text(text=%r)" % self.text
+
     def __nonzero__(self):
-        """
-        Make it possible to recognize and prune empty text nodes.
-        """
-        text = self.contents[0]
-        return text and not text.isspace()
+        if isinstance(self.parent, (BlockLevelSequence, ListItem)):
+            # Block level whitespace is not significant.
+            return self.text and not self.text.isspace()
+        else:
+            # Inline whitespace is significant.
+            return True
 
     def render(self, **kw):
-        return self.contents[0]
+        return self.text
 
 def is_block_level(contents):
     """
