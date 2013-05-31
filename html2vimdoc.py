@@ -1088,7 +1088,11 @@ def join_inline(nodes, **kw):
     """
     Join a sequence of inline nodes into a single string.
     """
+    # Render the indentation at the current level.
     prefix = ' ' * kw['indent']
+    # Reset the indentation for nested inline nodes.
+    kw['indent'] = 0
+    # Render the inline nodes.
     logger.debug("Inline nodes: %s", nodes)
     rendered_nodes = [n.render(**kw) for n in nodes]
     return "\n".join(textwrap.wrap(compact("".join(rendered_nodes)),
