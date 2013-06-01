@@ -480,9 +480,9 @@ def generate_table_of_contents(root):
             counters.append(1)
         logger.debug("Stack of counters after padding: %s", counters)
         entries.append(TableOfContentsEntry(
-            number=counters[heading.level - 1],
-            text=compact(join_inline(heading.contents, indent=heading.level)),
             indent=heading.level,
+            number=counters[heading.level - 1],
+            contents=heading.contents,
             tag=getattr(heading, 'tag', None)))
         counters[heading.level - 1] += 1
     logger.debug("Table of contents: %s", entries)
@@ -890,7 +890,7 @@ class Reference(BlockLevelNode):
         text = "[%i] %s" % (self.number, self.target)
         return [self.start_delimiter, text, self.end_delimiter]
 
-class TableOfContentsEntry(BlockLevelNode):
+class TableOfContentsEntry(BlockLevelNode, SequenceNode):
 
     """
     Block level node to represent a line in the table of contents.
@@ -909,14 +909,19 @@ class TableOfContentsEntry(BlockLevelNode):
         # Render the counter.
         text += "%i. " % self.number
         # Render the text.
-        text += self.text
+        text += join_inline(self.contents, indent=0)
         if self.tag:
-            tag = "|%s|" % self.tag
-            # Render the padding.
-            padding = max(1, TEXT_WIDTH - len(text) - len(tag))
-            text += " " * padding
-            # Render the tag.
-            text += tag
+            # Don't bother including redundant references.
+            for node in walk_tree(self, TagReference):
+                if node.tag == self.tag:
+                    break
+            else:
+                tag = "|%s|" % self.tag
+                # Render the padding.
+                padding = max(1, TEXT_WIDTH - len(text) - len(tag))
+                text += " " * padding
+                # Render the tag.
+                text += tag
         return [self.start_delimiter, text, self.end_delimiter]
 
 class InlineSequence(InlineNode, SequenceNode):
