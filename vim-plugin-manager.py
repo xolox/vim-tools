@@ -1,7 +1,12 @@
 #!/usr/bin/env python
 # vim: set fileencoding=utf-8 :
 
-# TODO Integrate "vim-doc-tool" used to generate documentation for vim-misc?
+# Publish Vim plug-ins to GitHub and Vim Online.
+#
+# Author: Peter Odding <peter@peterodding.com>
+# Last Change: June 1, 2013
+# URL: http://peterodding.com/code/vim/tools/
+#
 # TODO Automatically run tests before release? (first have to start writing them!)
 
 """
@@ -58,8 +63,8 @@ import coloredlogs
 #  pip install verboselogs
 import verboselogs
 
-# External dependency bundled with the Vim plug-in manager.
-import html2vimdoc
+# External dependencies bundled with the Vim plug-in manager.
+import html2vimdoc, vimdoctool
 
 def main():
 
@@ -156,11 +161,11 @@ class VimPluginManager:
         """
         # Create a logger instance.
         self.logger = verboselogs.VerboseLogger('vim-plugin-manager')
-        self.logger.setLevel(logging.DEBUG)
+        self.set_log_level(logging.DEBUG)
         # Add a handler for logging to a file.
         log_file = os.path.expanduser('~/.vim-plugin-manager.log')
         log_exists = os.path.isfile(log_file)
-        file_handler = coloredlogs.ColoredStreamHandler(open(log_file, 'a'), isatty=False)
+        file_handler = coloredlogs.ColoredStreamHandler(open(log_file, 'a'), show_name=True, isatty=False)
         self.logger.addHandler(file_handler)
         # The log file is always verbose.
         file_handler.setLevel(logging.DEBUG)
@@ -170,19 +175,27 @@ class VimPluginManager:
             self.logger.info("-" * 40)
         # Add a logging handler for console output, after logging the delimiter
         # to the log file (the delimiter is useless on the console).
-        console_handler = coloredlogs.ColoredStreamHandler()
+        console_handler = coloredlogs.ColoredStreamHandler(show_name=True)
         self.logger.addHandler(console_handler)
         # Set the verbosity of the console output.
         if verbosity >= 2:
-            console_handler.setLevel(logging.DEBUG)
+            self.set_log_level(logging.DEBUG)
             self.logger.debug("Enabling debugging output.")
         elif verbosity == 1:
-            console_handler.setLevel(logging.VERBOSE)
+            self.set_log_level(logging.VERBOSE)
             self.logger.verbose("Enabling verbose output.")
         else:
-            console_handler.setLevel(logging.INFO)
+            self.set_log_level(logging.INFO)
         # Mention the log file on the console after setting the verbosity?
         self.logger.debug("Logging messages to %s.", log_file)
+
+    def set_log_level(self, level):
+        """
+        Set the log verbosity of the Vim plug-in manager & related modules.
+        """
+        self.logger.setLevel(level)
+        html2vimdoc.logger.setLevel(level)
+        vimdoctool.logger.setLevel(level)
 
     def load_configuration(self):
         """
@@ -502,7 +515,8 @@ class VimPluginManager:
         plugin_name = self.find_current_plugin()
         self.check_gitignore_file(plugin_name)
         self.update_copyright(plugin_name)
-        self.update_vimdoc(plugin_name)
+        self.run_vimdoctool(plugin_name)
+        self.run_html2vimdoc(plugin_name)
 
     def check_gitignore_file(self, plugin_name):
         """
@@ -514,7 +528,7 @@ class VimPluginManager:
         # will error out with "fatal: No HEAD commit to compare with (yet)".
         self.logger.debug("Checking whether there is an initial commit ..")
         try:
-            run('git', 'rev-parse', 'HEAD')
+            run('git', 'rev-parse', 'HEAD', capture=True)
         except ExternalCommandFailed:
             self.logger.warn("No initial commit yet, can't check .gitignore!")
             return
@@ -550,7 +564,17 @@ class VimPluginManager:
                     handle.write(u'%s\n' % line)
             run('git', 'add', 'README.md', cwd=directory)
 
-    def update_vimdoc(self, plugin_name):
+    def run_vimdoctool(self, plugin_name):
+        """
+        Update the function documentation embedded in README.md using the
+        vimdoctool.py Python module.
+        """
+        directory = self.plugins[plugin_name]['directory']
+        readme = os.path.join(directory, 'README.md')
+        self.logger.info("Updating embedded documentation in %s ..", readme)
+        vimdoctool.embed_documentation(directory, readme, startlevel=3)
+
+    def run_html2vimdoc(self, plugin_name):
         """
         Generate a Vim help file from the README.md file in the git repository
         of a Vim plug-in using the html2vimdoc.py Python module.
@@ -616,7 +640,7 @@ class VimPluginManager:
         for plugin_name, info in self.plugins.iteritems():
             directory = os.path.realpath(info['directory'])
             if current_directory.startswith(directory):
-                self.logger.info("Current plug-in is %s", plugin_name)
+                self.logger.info("Current plug-in is %r.", plugin_name)
                 return plugin_name
         msg = "The directory %r doesn't contain a known Vim plug-in!"
         raise Exception, msg % current_directory

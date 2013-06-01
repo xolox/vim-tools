@@ -1,5 +1,11 @@
 #!/usr/bin/env python
 
+# Convert HTML (and Markdown) documents to Vim help files
+#
+# Author: Peter Odding <peter@peterodding.com>
+# Last Change: June 1, 2013
+# URL: http://peterodding.com/code/vim/tools/
+#
 # Missing features:
 # TODO Support for <table> elements.
 #
@@ -75,9 +81,9 @@ TEXT_WIDTH = 79
 SHIFT_WIDTH = 2
 
 # Initialize the logging subsystem.
-logger = logging.getLogger()
+logger = logging.getLogger('html2vimdoc')
 logger.setLevel(logging.INFO)
-logger.addHandler(coloredlogs.ColoredStreamHandler())
+logger.addHandler(coloredlogs.ColoredStreamHandler(show_name=True))
 
 # Mapping of HTML element names to custom Node types.
 name_to_type_mapping = {}
