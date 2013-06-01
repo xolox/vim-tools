@@ -121,6 +121,10 @@ contacted at <peter@peterodding.com>. The latest version is available at
 This software is licensed under the [MIT license] [mit].  
 © 2013 Peter Odding &lt;<peter@peterodding.com>&gt;.
 
+The `html2vimdoc.py` module bundles `soupselect.py` by Simon Willison. The
+soupselect module is also licensed under the [MIT license] [mit]. You can find
+the soupselect module on [GitHub] [ss-gh] and [Google Code] [ss-gc].
+
 
 [bs]: http://www.crummy.com/software/BeautifulSoup/
 [cl]: https://pypi.python.org/pypi/coloredlogs/0.2
@@ -132,6 +136,8 @@ This software is licensed under the [MIT license] [mit].
 [md]: http://en.wikipedia.org/wiki/Markdown
 [mit]: http://en.wikipedia.org/wiki/MIT_License
 [mn]: https://pypi.python.org/pypi/mechanize/
+[ss-gc]: https://code.google.com/p/soupselect/
+[ss-gh]: https://github.com/simonw/soupselect
 [vim-misc]: http://peterodding.com/code/vim/misc/
 [vim-online]: http://www.vim.org/account/profile.php?user_id=14483
 [virtualenv]: http://www.virtualenv.org/
