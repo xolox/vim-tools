@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 
 # Missing features:
-# TODO Find tag references in text and mark them.
 # TODO Support for <table> elements.
 #
 # Finding the right abstractions:
@@ -398,9 +397,8 @@ def mark_tags(root, tags):
     Mark references to tags defined in the document.
     """
     def recurse(node, parent):
-        if isinstance(node, CodeFragment):
-            if node.text in tags:
-                return Text(text="|%s|" % node.text, parent=parent)
+        if isinstance(node, CodeFragment) and node.text in tags:
+            return TagReference(node.text, [Text(text=node.text)], parent=node.parent)
         if isinstance(node, SequenceNode):
             new_contents = []
             for child in node:
@@ -956,6 +954,24 @@ class Image(InlineNode):
             text = self.alt or '(unlabeled image)'
         return "Image: " + text
 
+class TagReference(InlineNode, SequenceNode):
+
+    def __init__(self, tag, contents, parent=None):
+        self.tag = tag
+        self.contents = contents
+        self.parent = parent
+
+    def render(self, **kw):
+        logger.debug("About to render: %r", self)
+        text = join_inline(self.contents, **kw)
+        if any(isinstance(p, Heading) for p in self.parents):
+            # Tag references are not valid inside headings.
+            return text
+        elif text.find(self.tag) >= 0:
+            return text.replace(self.tag, "|%s|" % self.tag)
+        else:
+            return "%s (see |%s|)" % (text, self.tag)
+
 @html_element('a')
 class HyperLink(InlineNode, SequenceNode):
 
@@ -966,8 +982,15 @@ class HyperLink(InlineNode, SequenceNode):
 
     @staticmethod
     def parse(html_node):
-        return HyperLink(target=html_node.get('href', ''),
-                         contents=simplify_children(html_node))
+        target = html_node.get('href', '')
+        contents = simplify_children(html_node)
+        # Automatically turn links to the online Vim documentation into *tag* |references|.
+        if target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
+            tag = urlparse.urlparse(target).fragment
+            if tag:
+                tag = urllib.unquote(tag)
+                return TagReference(tag, contents)
+        return HyperLink(target=target, contents=contents)
 
     def __repr__(self):
         text = self.render(indent=0)
@@ -983,16 +1006,6 @@ class HyperLink(InlineNode, SequenceNode):
             text = join_inline([Text(text=raw_text)], **kw)
         else:
             text = join_inline(self.contents, **kw)
-        # Turn links to Vim documentation into *tags*.
-        if self.target.startswith('http://vimdoc.sourceforge.net/htmldoc/'):
-            tag = urlparse.urlparse(self.target).fragment
-            # Tags are not valid inside headings, so we have to check.
-            if tag and not any(isinstance(n, Heading) for n in self.parents):
-                tag = urllib.unquote(tag)
-                if text.find(tag) >= 0:
-                    text = text.replace(tag, '|%s|' % tag)
-                else:
-                    text = '%s (see |%s|)' % (text, tag)
         # Add references as needed.
         if hasattr(self, 'reference'):
             text = "%s [%i]" % (text, self.reference.number)
