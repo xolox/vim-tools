@@ -563,7 +563,7 @@ class VimPluginManager:
         self.logger.info("Converting %s to %s ..", readme, help_path)
         with open(readme) as handle:
             markdown = handle.read()
-        html = html2vimdoc.markdown_to_html(markdown)
+        html = html2vimdoc.markdown_to_html(markdown, [])
         vimdoc = html2vimdoc.html2vimdoc(html, filename=help_file)
         if not os.path.isdir(help_dir):
             os.mkdir(help_dir)
