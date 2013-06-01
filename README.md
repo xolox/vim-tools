@@ -109,6 +109,18 @@ my release management, here's a short summary:
 It might be a bit specific to my workflow but you never know, someone might
 find it useful :-)
 
+## Contact
+
+If you have questions, bug reports, suggestions, etc. the author can be
+contacted at <peter@peterodding.com>. The latest version is available at
+<http://peterodding.com/code/vim/tools/> and
+<http://github.com/xolox/vim-tools>.
+
+## License
+
+This software is licensed under the [MIT license] [mit].  
+© 2013 Peter Odding &lt;<peter@peterodding.com>&gt;.
+
 
 [bs]: http://www.crummy.com/software/BeautifulSoup/
 [cl]: https://pypi.python.org/pypi/coloredlogs/0.2
@@ -118,6 +130,7 @@ find it useful :-)
 [lua-apr]: http://peterodding.com/code/lua/apr/docs
 [lua]: http://www.lua.org/manual/5.1/manual.html
 [md]: http://en.wikipedia.org/wiki/Markdown
+[mit]: http://en.wikipedia.org/wiki/MIT_License
 [mn]: https://pypi.python.org/pypi/mechanize/
 [vim-misc]: http://peterodding.com/code/vim/misc/
 [vim-online]: http://www.vim.org/account/profile.php?user_id=14483
