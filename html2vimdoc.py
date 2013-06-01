@@ -54,6 +54,7 @@ import os
 import re
 import sys
 import textwrap
+import types
 import urllib
 import urlparse
 
@@ -181,6 +182,7 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     ignore_given_selectors(tree, selectors_to_ignore)
     root = find_root_node(tree, content_selector)
     simple_tree = simplify_node(root)
+    #make_parents_explicit(simple_tree)
     shift_headings(simple_tree)
     find_references(simple_tree, url)
     # Add an "Introduction" heading to separate the table of contents from the
@@ -188,10 +190,12 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     simple_tree.contents.insert(0, Heading(level=1, contents=[Text(text="Introduction")]))
     logger.info("Tagging document headings ..")
     tagged_headings = tag_headings(simple_tree, filename)
-    logger.info("Marking internal references ..")
+    logger.info("Marking internal references (pass 1, before TOC) ..")
     simple_tree = mark_tags(simple_tree, tagged_headings)
     logger.info("Generating table of contents ..")
     generate_table_of_contents(simple_tree)
+    logger.info("Marking internal references (pass 2, after TOC) ..")
+    simple_tree = mark_tags(simple_tree, tagged_headings)
     make_parents_explicit(simple_tree)
     prune_empty_blocks(simple_tree)
     logger.info("Rendering output ..")
@@ -482,12 +486,43 @@ def generate_table_of_contents(root):
         entries.append(TableOfContentsEntry(
             indent=heading.level,
             number=counters[heading.level - 1],
-            contents=heading.contents,
+            contents=copy(heading.contents),
             tag=getattr(heading, 'tag', None)))
         counters[heading.level - 1] += 1
-    logger.debug("Table of contents: %s", entries)
+    for i, entry in enumerate(entries, start=1):
+        logger.debug("Table of contents entry %i: %s", i, entry)
     root.contents.insert(0, Heading(level=1, contents=[Text(text="Contents")]))
     root.contents.insert(1, BlockLevelSequence(contents=entries))
+
+def copy(node):
+    """
+    Copy a subtree, breaking references to the old position in the tree.
+    """
+    if isinstance(node, list):
+        return map(copy, node)
+    elif isinstance(node, Node):
+        attributes = {}
+        for name in dir(node):
+            value = getattr(node, name)
+            # Ignore private attributes.
+            if name.startswith('_'):
+                logger.debug("Ignoring private attribute: %s", name)
+                continue
+            # Ignore methods reported by 'dir'.
+            if isinstance(value, types.MethodType):
+                logger.debug("Ignoring non-attribute: %s", name)
+                continue
+            # Copy only child nodes, never parent nodes.
+            if 'parent' in name:
+                logger.debug("Ignoring parent node attribute: %s", name)
+                continue
+            # Copy attribute value.
+            logger.debug("Copying attribute %s ..", name)
+            attributes[name] = copy(getattr(node, name))
+        # Instantiate the new object.
+        return node.__class__(**attributes)
+    else:
+        return node
 
 def prune_empty_blocks(root):
     """
@@ -900,7 +935,7 @@ class TableOfContentsEntry(BlockLevelNode, SequenceNode):
     end_delimiter = OutputDelimiter('\n')
 
     def __repr__(self):
-        return "TableOfContentsEntry(number=%i, text=%r, indent=%i)" % (self.number, self.text, self.indent)
+        return "TableOfContentsEntry(indent=%i, number=%i, contents=%r)" % (self.indent, self.number, self.contents)
 
     def render(self, **kw):
         text = ''
@@ -914,8 +949,10 @@ class TableOfContentsEntry(BlockLevelNode, SequenceNode):
             # Don't bother including redundant references.
             for node in walk_tree(self, TagReference):
                 if node.tag == self.tag:
+                    logger.debug("Table of contents entry contains literal reference to tag ..")
                     break
             else:
+                logger.debug("Table of contents entry doesn't have literal reference to tag; adding it ..")
                 tag = "|%s|" % self.tag
                 # Render the padding.
                 padding = max(1, TEXT_WIDTH - len(text) - len(tag))
@@ -966,15 +1003,21 @@ class TagReference(InlineNode, SequenceNode):
         self.contents = contents
         self.parent = parent
 
+    def __repr__(self):
+        return "TagReference(tag=%r, contents=%r)" % (self.tag, self.contents)
+
     def render(self, **kw):
         logger.debug("About to render: %r", self)
         text = join_inline(self.contents, **kw)
-        if any(isinstance(p, Heading) for p in self.parents):
-            # Tag references are not valid inside headings.
+        parents_which_are_headings = [p for p in self.parents if isinstance(p, Heading)]
+        if parents_which_are_headings:
+            logger.debug("Omitting tag reference inside heading %s (not valid) ..", parents_which_are_headings[0])
             return text
         elif text.find(self.tag) >= 0:
+            logger.debug("Tag reference contains literal tag name, replacing ..")
             return text.replace(self.tag, "|%s|" % self.tag)
         else:
+            logger.debug("Tag reference doesn't contain tag name, appending ..")
             return "%s (see |%s|)" % (text, self.tag)
 
 @html_element('a')
@@ -1160,6 +1203,7 @@ def create_tag(text, prefix, is_code):
     """
     Convert arbitrary text to a Vim help file tag.
     """
+    logger.debug("Creating tag from text %r with prefix %r (is_code=%r)", text, prefix, is_code)
     if is_code:
         # Preserve the case of programming language identifiers.
         anchor = text
@@ -1189,11 +1233,13 @@ def create_tag(text, prefix, is_code):
         anchor = prefix + '-' + anchor
     # Tags can only contain a limited set of characters.
     if is_code:
-        anchor = re.sub('[^A-Za-z0-9_().:]+', '-', anchor)
+        anchor = re.sub('[^A-Za-z0-9_().:#]+', '-', anchor)
     else:
         anchor = re.sub('[^A-Za-z0-9_().]+', '-', anchor)
     # Trim leading/trailing sanitized characters.
-    return anchor.strip('-')
+    anchor = anchor.strip('-')
+    logger.debug("Resulting tag: %r", anchor)
+    return anchor
 
 def flatten(l):
     """
