@@ -533,7 +533,7 @@ class VimPluginManager:
             self.logger.warn("No initial commit yet, can't check .gitignore!")
             return
         # There is an initial commit: We can check the .gitignore file!
-        if ('doc/tags' not in run('git', 'show', 'HEAD:.gitignore', cwd=directory, capture=True).splitlines() and
+        if ('doc/tags' not in self.get_committed_contents(plugin_name, '.gitignore').splitlines() and
                 '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore', cwd=directory, capture=True).splitlines()):
             self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
             sys.exit(1)
@@ -684,6 +684,14 @@ class VimPluginManager:
             changed_files.append(filename)
         return sorted(changed_files)
 
+    def get_committed_contents(self, plugin_name, filename, revision='HEAD'):
+        """
+        Get the last committed contents of a file.
+        """
+        directory = self.plugins[plugin_name]['directory']
+        filename = os.path.relpath(os.path.abspath(filename), os.path.abspath(directory))
+        return run('git', 'show', '%s:%s' % (revision, filename), cwd=directory, capture=True)
+
     def find_version_in_repository(self, plugin_name, branch_name='master'):
         """
         Find the version of a Vim plug-in that is the highest version number
@@ -698,9 +706,7 @@ class VimPluginManager:
         version_definition = 'let g:%s#version' % autoload_path.replace('/', '#')
         self.logger.debug("Finding local committed version by scanning %s for %r ..", autoload_script, version_definition)
         # Ignore uncommitted changes in the auto-load script.
-        script_contents = run('git', 'show', '%s:%s' % (branch_name, autoload_script),
-                              cwd=self.plugins[plugin_name]['directory'],
-                              capture=True)
+        script_contents = self.get_committed_contents(plugin_name, autoload_script, revision=branch_name)
         # Look for the version definition.
         for line in script_contents.splitlines():
             if line.startswith(version_definition):
