@@ -4,7 +4,7 @@
 # Publish Vim plug-ins to GitHub and Vim Online.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 1, 2013
+# Last Change: June 2, 2013
 # URL: http://peterodding.com/code/vim/tools/
 #
 # TODO Automatically run tests before release? (first have to start writing them!)
@@ -573,6 +573,7 @@ class VimPluginManager:
         readme = os.path.join(directory, 'README.md')
         self.logger.info("Updating embedded documentation in %s ..", readme)
         vimdoctool.embed_documentation(directory, readme, startlevel=3)
+        run('git', 'add', 'README.md', cwd=directory)
 
     def run_html2vimdoc(self, plugin_name):
         """
