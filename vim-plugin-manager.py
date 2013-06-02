@@ -572,7 +572,8 @@ class VimPluginManager:
         directory = self.plugins[plugin_name]['directory']
         readme = os.path.join(directory, 'README.md')
         self.logger.info("Updating embedded documentation in %s ..", readme)
-        vimdoctool.embed_documentation(directory, readme, startlevel=3)
+        vimdoctool.embed_documentation(directory, readme, startlevel=3,
+                                       vfs=GitVFS(directory))
         run('git', 'add', 'README.md', cwd=directory)
 
     def run_html2vimdoc(self, plugin_name):
@@ -728,6 +729,25 @@ class ExternalCommandFailed(Exception):
     def __init__(self, msg, command):
         super(ExternalCommandFailed, self).__init__(msg)
         self.command = command
+
+class GitVFS(object):
+
+    """
+    Virtual file system interface which looks at the git HEAD of the master
+    branch in the given directory.
+    """
+
+    def __init__(self, root):
+        self.root = os.path.abspath(root)
+
+    def __str__(self):
+        return "git master branch in %s" % self.root
+
+    def list(self):
+        return run('git', 'ls-files', '--full-name', cwd=self.root, capture=True).splitlines()
+
+    def read(self, filename):
+        return run('git', 'show', ':%s' % filename, cwd=self.root, capture=True)
 
 def run(*args, **kw):
     """
