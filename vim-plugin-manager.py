@@ -4,7 +4,7 @@
 # Publish Vim plug-ins to GitHub and Vim Online.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 2, 2013
+# Last Change: June 22, 2013
 # URL: http://peterodding.com/code/vim/tools/
 #
 # TODO Automatically run tests before release? (first have to start writing them!)
@@ -39,6 +39,7 @@ Supported options:
 import codecs
 import ConfigParser
 import getopt
+import json
 import logging
 import netrc
 import os
@@ -514,6 +515,7 @@ class VimPluginManager:
         self.logger.info("Running pre-commit hooks ..")
         plugin_name = self.find_current_plugin()
         self.check_gitignore_file(plugin_name)
+        self.update_vam_addon_info(plugin_name)
         self.update_copyright(plugin_name)
         self.run_vimdoctool(plugin_name)
         self.run_html2vimdoc(plugin_name)
@@ -522,11 +524,11 @@ class VimPluginManager:
         """
         Make sure .gitignore excludes doc/tags.
         """
-        self.logger.debug("Checking if .gitignore excludes doc/tags ..")
+        self.logger.verbose("Checking if .gitignore excludes doc/tags ..")
         directory = self.plugins[plugin_name]['directory']
         # Make sure there is an initial commit, otherwise git on Ubuntu 10.04
         # will error out with "fatal: No HEAD commit to compare with (yet)".
-        self.logger.debug("Checking whether there is an initial commit ..")
+        self.logger.verbose("Checking whether there is an initial commit ..")
         try:
             run('git', 'rev-parse', 'HEAD', capture=True)
         except ExternalCommandFailed:
@@ -538,13 +540,32 @@ class VimPluginManager:
             self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
             sys.exit(1)
 
+    def update_vam_addon_info(self, plugin_name):
+        """
+        Make sure addon-info.json is up to date. This file is used by
+        vim-addon-manager (VAM).
+        """
+        self.logger.verbose("Updating addon-info.json ..")
+        directory = self.plugins[plugin_name]['directory']
+        addon_info_file = os.path.join(directory, 'addon-info.json')
+        addon_info = dict(name=plugin_name.split('/')[-1],
+                          homepage=self.plugins[plugin_name]['homepage'],
+                          dependencies=dict())
+        if plugin_name != 'xolox/vim-misc':
+            addon_info['dependencies']['vim-misc'] = dict()
+        if 'script-id' in self.plugins[plugin_name]:
+            addon_info['vim_script_nr'] = int(self.plugins[plugin_name]['script-id'])
+        with open(addon_info_file, 'w') as handle:
+            handle.write(json.dumps(addon_info))
+        run('git', 'add', addon_info_file, cwd=directory)
+
     def update_copyright(self, plugin_name):
         """
         Update the year of copyright in README.md when needed.
         """
         contents = []
         updated_copyright = False
-        self.logger.debug("Checking if copyright in README is up to date ..")
+        self.logger.verbose("Checking if copyright in README is up to date ..")
         directory = self.plugins[plugin_name]['directory']
         filename = os.path.join(directory, 'README.md')
         with codecs.open(filename, 'r', 'utf-8') as handle:
