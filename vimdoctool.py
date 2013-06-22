@@ -3,7 +3,7 @@
 # Extract & combine function documentation from Vim scripts.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 2, 2013
+# Last Change: June 17, 2013
 # URL: http://peterodding.com/code/vim/tools/
 
 """
@@ -68,7 +68,7 @@ def embed_documentation(directory, filename, startlevel=1, vfs=None):
         template = handle.read()
     if doc_start not in template:
         # Nothing to do.
-        logger.warn("Markdown document %s doesn't contain start marker: %s", doc_start)
+        logger.warn("Markdown document %s doesn't contain start marker: %s", filename, doc_start)
         return
     # Extract documentation from Vim scripts.
     documentation = generate_documentation(directory, startlevel=startlevel, vfs=vfs)
