@@ -35,11 +35,15 @@ It has a command line interface but can also be used as a plain Python module.
 The `html2vimdoc.py` module has several dependencies, the easiest way to
 install them is in a [Python virtual environment] [virtualenv]:
 
+    # Clone the repository
+    git clone https://github.com/chivalry/vim-tools.git
+    cd vim-tools
+
     # Create the virtual environment.
     virtualenv html2vimdoc
 
     # Install the dependencies.
-    html2vimdoc/bin/pip install beautifulsoup coloredlogs
+    html2vimdoc/bin/pip install beautifulsoup coloredlogs markdown
 
     # Run the program.
     html2vimdoc/bin/python ./html2vimdoc.py --help
