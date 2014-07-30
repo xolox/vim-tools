@@ -112,11 +112,9 @@ def generate_documentation(directory, startlevel=1, vfs=None):
                 if parse_results['description']:
                     output.append("\n".join(parse_results['description']))
                 for function, comments in parse_results['functions']:
-                    output.append("%s The `%s()` function" % ("#" * (startlevel + 1), function))
                     if any(line and not line.isspace() for line in comments):
+                        output.append("%s The `%s()` function" % ("#" * (startlevel + 1), function))
                         output.append("\n".join(comments))
-                    else:
-                        output.append('<span style="color: #ccc;">(this function is currently undocumented)</span>')
     return "\n\n".join(output)
 
 def find_vim_scripts(vfs):
