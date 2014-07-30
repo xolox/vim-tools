@@ -3,7 +3,7 @@
 # Extract & combine function documentation from Vim scripts.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 17, 2013
+# Last Change: June 24, 2013
 # URL: http://peterodding.com/code/vim/tools/
 
 """
@@ -95,8 +95,10 @@ def generate_documentation(directory, startlevel=1, vfs=None):
     for filename in sorted(find_vim_scripts(vfs), key=str.lower):
         parse_results = parse_vim_script(vfs, filename)
         if parse_results:
-            num_functions += len(parse_results['functions'])
-            scripts.append((filename, parse_results))
+            count = len(parse_results['functions'])
+            if count > 0:
+                num_functions += count
+                scripts.append((filename, parse_results))
     # Combine all of the documentation into a single Markdown document.
     output = [wrap("""
         The documentation of the {num_funcs} functions below was extracted from
