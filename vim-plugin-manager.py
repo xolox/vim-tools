@@ -4,7 +4,7 @@
 # Publish Vim plug-ins to GitHub and Vim Online.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 22, 2013
+# Last Change: March 26, 2015
 # URL: http://peterodding.com/code/vim/tools/
 #
 # TODO Automatically run tests before release? (first have to start writing them!)
@@ -551,7 +551,7 @@ class VimPluginManager:
         addon_info = dict(name=plugin_name.split('/')[-1],
                           homepage=self.plugins[plugin_name]['homepage'],
                           dependencies=dict())
-        if plugin_name != 'xolox/vim-misc':
+        if self.depends_on_vim_misc(plugin_name):
             addon_info['dependencies']['vim-misc'] = dict()
         if 'script-id' in self.plugins[plugin_name]:
             addon_info['vim_script_nr'] = int(self.plugins[plugin_name]['script-id'])
@@ -617,6 +617,31 @@ class VimPluginManager:
         with codecs.open(help_path, 'w', 'utf-8') as handle:
             handle.write("%s\n" % vimdoc)
         run('git', 'add', help_path, cwd=directory)
+
+    def depends_on_vim_misc(self, plugin_name):
+        """
+        Check whether a Vim plug-in depends on the vim-misc plug-in.
+
+        This method inspects the ``*.vim`` files in the git repository for
+        references to ``xolox#misc#*`` which is a simple and naive way to check
+        for the vim-misc dependency. It can be fooled (it's not really aware of
+        Vim script syntax rules) but it suffices for me.
+        """
+        if plugin_name != 'xolox/vim-misc':
+            # Use the GitVFS class to scan the repository without getting
+            # confused by uncommitted changes or files.
+            directory = self.plugins[plugin_name]['directory']
+            vfs = GitVFS(directory)
+            for filename in vfs.list():
+                if filename.endswith('.vim'):
+                    contents = vfs.read(filename)
+                    for line in contents.splitlines():
+                        line = line.strip()
+                        # Ignore comments (lines starting with a double quote).
+                        if not line.startswith('"'):
+                            if 'xolox#misc#' in contents:
+                                return True
+        return False
 
     ## Post-commit hooks.
 
