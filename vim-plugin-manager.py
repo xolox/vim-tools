@@ -4,7 +4,7 @@
 # Publish Vim plug-ins to GitHub and Vim Online.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: March 26, 2015
+# Last Change: April 1, 2015
 # URL: http://peterodding.com/code/vim/tools/
 #
 # TODO Automatically run tests before release? (first have to start writing them!)
@@ -517,6 +517,7 @@ class VimPluginManager:
         self.check_gitignore_file(plugin_name)
         self.update_vam_addon_info(plugin_name)
         self.update_copyright(plugin_name)
+        self.update_install_instructions(plugin_name)
         self.run_vimdoctool(plugin_name)
         self.run_html2vimdoc(plugin_name)
 
@@ -584,6 +585,102 @@ class VimPluginManager:
                 for line in contents:
                     handle.write(u'%s\n' % line)
             run('git', 'add', 'README.md', cwd=directory)
+
+    def update_install_instructions(self, plugin_name):
+        """
+        Generate ``INSTALL.md``.
+
+        Over time I've learned that most people perusing GitHub don't read
+        through the ``README.md`` files in my projects before trying them out,
+        so I moved the installation instructions to separate (easy to
+        recognize) files called ``INSTALL.md`` to avoid people missing the
+        installation instructions and submitting bug reports about things that
+        are clearly documented.
+
+        However there are more similarities than differences between the
+        installation instructions for my 10+ Vim plug-ins and I got sick of
+        propagating common changes between git repositories manually, so
+        eventually I wrote the following code that alleviates me from the
+        tedium of keeping these files in sync.
+        """
+        directory = self.plugins[plugin_name]['directory']
+        install_file = os.path.join(directory, 'INSTALL.md')
+        self.logger.info("Generating %s ..", install_file)
+        repository_name = plugin_name.split('/')[-1]
+        vim_misc_required = self.depends_on_vim_misc(plugin_name)
+        instructions = ["# Installation instructions"]
+        if vim_misc_required:
+            instructions.append(compact("""
+                *Please note that the {name} plug-in requires my vim-misc
+                plug-in which is separately distributed.*
+            """, name=repository_name))
+        instructions.append(compact("""
+            There are two ways to install the {name} plug-in and it's up to you
+            which you prefer, both options are explained below. Please note
+            that below are generic installation instructions while some Vim
+            plug-ins may have external dependencies, please refer to the
+            plug-in's [readme](README.md) for details.
+        """, name=repository_name))
+        instructions.append(compact("""
+            ## Installation using {zip_archives}
+        """, zip_archives="ZIP archives" if vim_misc_required else "a ZIP archive"))
+        base_download_url = "http://peterodding.com/code/vim/downloads"
+        download_link = compact("""
+            [{name}]({base_url}/{zip_file})
+        """,  name=repository_name,
+              base_url=base_download_url,
+              zip_file=self.plugins[plugin_name]['zip-file'])
+        if vim_misc_required:
+            zip_archives = compact("""
+                ZIP archives of the {download_link} and
+                [vim-misc]({base_url}/misc.zip) plug-ins
+            """, download_link=download_link,
+                 base_url=base_download_url)
+        else:
+            zip_archives = compact("""
+                ZIP archive of the {download_link} plug-in
+            """, download_link=download_link)
+        instructions.append(compact(r"""
+            Unzip the most recent {zip_archives} inside your Vim profile
+            directory (usually this is `~/.vim` on UNIX and
+            `%USERPROFILE%\vimfiles` on Windows), restart Vim and execute the
+            command `:helptags ~/.vim/doc` (use `:helptags ~\vimfiles\doc`
+            instead on Windows).
+        """, zip_archives=zip_archives))
+        instructions.append(compact("""
+            If you get warnings about overwriting existing files while
+            unpacking the {archives} you probably don't need to worry about
+            this because it's most likely caused by files like `README.md`,
+            `INSTALL.md` and `addon-info.json`. If these files bother you then
+            you can remove them after unpacking the {archives}, they are not
+            required to use the plug-in.
+        """, archives="ZIP archives" if vim_misc_required else "ZIP archive"))
+        instructions.append("## Installation using a Vim plug-in manager")
+        repo_link = compact("""
+            [{name}](https://github.com/{github_repo})
+        """, name=repository_name,
+             github_repo=plugin_name)
+        if vim_misc_required:
+            git_repos = compact("""
+                {repo_link} and [vim-misc](https://github.com/xolox/vim-misc)
+                plug-ins using local clones of the git repositories
+            """, repo_link=repo_link)
+        else:
+            git_repos = compact("""
+                {repo_link} plug-in using a local clone of the git repository
+            """, repo_link=repo_link)
+        instructions.append(compact("""
+            If you prefer you can also use
+            [Pathogen](http://www.vim.org/scripts/script.php?script_id=2332),
+            [Vundle](https://github.com/gmarik/vundle) or a similar tool to
+            install and update the {git_repos}. This takes a bit of work to
+            set up the first time but it makes updating much easier, and it
+            keeps each plug-in in its own directory which helps to keep your
+            Vim profile uncluttered.
+        """, git_repos=git_repos))
+        with open(install_file, 'w') as handle:
+            handle.write("\n\n".join(instructions) + "\n")
+        run('git', 'add', 'INSTALL.md', cwd=directory)
 
     def run_vimdoctool(self, plugin_name):
         """
@@ -795,6 +892,8 @@ class GitVFS(object):
     def read(self, filename):
         return run('git', 'show', ':%s' % filename, cwd=self.root, capture=True)
 
+# FIXME Switch to executor.execute() once vim-plugin-manager is a proper Python package.
+
 def run(*args, **kw):
     """
     Run an external process, make sure it exited with a zero return code and
@@ -820,6 +919,17 @@ def cp1252_to_utf8(text):
     I want UTF-8 (e.g. on the console and in the log file).
     """
     return text.decode('windows-1252').encode('utf-8')
+
+def compact(text, **kw):
+    """
+    Compact whitespace in a string and format any keyword arguments into the
+    resulting string.
+
+    :param text: The text to compact (a string).
+    :param kw: Any keyword arguments to apply using :py:func:`str.format()`.
+    :returns: The compacted, formatted string.
+    """
+    return ' '.join(text.split()).format(**kw)
 
 if __name__ == '__main__':
     main()
