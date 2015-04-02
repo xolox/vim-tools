@@ -3,7 +3,7 @@
 # Extract & combine function documentation from Vim scripts.
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 24, 2013
+# Last Change: April 2, 2015
 # URL: http://peterodding.com/code/vim/tools/
 
 """
@@ -69,16 +69,21 @@ def embed_documentation(directory, filename, startlevel=1, vfs=None):
     if doc_start not in template:
         # Nothing to do.
         logger.warn("Markdown document %s doesn't contain start marker: %s", filename, doc_start)
-        return
+        return False
     # Extract documentation from Vim scripts.
     documentation = generate_documentation(directory, startlevel=startlevel, vfs=vfs)
     # Inject documentation into Markdown document.
     documentation = "\n\n".join([doc_start, documentation, doc_end])
     pattern = re.compile(re.escape(doc_start) + '.*?' + re.escape(doc_end), re.DOTALL)
+    updated_template = pattern.sub(documentation, template)
+    if ignore_timestamp(updated_template) == ignore_timestamp(template):
+        # Nothing was changed (except maybe the time stamp).
+        return False
     # Save updated Markdown document.
     logger.debug("Writing template: %s", filename)
     with open(filename, 'w') as handle:
-        handle.write(pattern.sub(documentation, template))
+        handle.write(updated_template)
+    return True
 
 def generate_documentation(directory, startlevel=1, vfs=None):
     """
@@ -104,8 +109,8 @@ def generate_documentation(directory, startlevel=1, vfs=None):
         The documentation of the {num_funcs} functions below was extracted from
         {num_scripts} Vim scripts on {date}.
     """).format(num_funcs=num_functions,
-                            num_scripts=len(scripts),
-                            date=time.strftime('%B %e, %Y at %H:%M'))]
+                num_scripts=len(scripts),
+                date=compact(time.strftime('%B %e, %Y at %H:%M')))]
     for filename, parse_results in scripts:
             if parse_results['functions']:
                 output.append("%s %s" % ("#" * startlevel, parse_results['synopsis']))
@@ -231,6 +236,19 @@ def compact(text):
     Compact whitespace in a string.
     """
     return " ".join(text.split())
+
+def ignore_timestamp(text):
+    """
+    Remove a time stamp from a string to ease comparison.
+
+    This function removes timestamps generated using the following method::
+
+        time.strftime('%B %e, %Y at %H:%M')
+
+    This makes it easy to compare two strings for equality without even though
+    the embedded timestamps may differ.
+    """
+    return re.sub(r'\w+\s+\d{1,2},\s+\d{4}\s+at\s+\d\d:\d\d', '', text)
 
 if __name__ == '__main__':
     main()
