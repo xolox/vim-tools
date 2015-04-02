@@ -526,18 +526,17 @@ class VimPluginManager:
         Make sure .gitignore excludes doc/tags.
         """
         self.logger.verbose("Checking if .gitignore excludes doc/tags ..")
-        directory = self.plugins[plugin_name]['directory']
         # Make sure there is an initial commit, otherwise git on Ubuntu 10.04
         # will error out with "fatal: No HEAD commit to compare with (yet)".
         self.logger.verbose("Checking whether there is an initial commit ..")
         try:
-            run('git', 'rev-parse', 'HEAD', capture=True)
+            run('git', 'rev-parse', 'HEAD', silent=True)
         except ExternalCommandFailed:
             self.logger.warn("No initial commit yet, can't check .gitignore!")
             return
         # There is an initial commit: We can check the .gitignore file!
         if ('doc/tags' not in self.get_committed_contents(plugin_name, '.gitignore').splitlines() and
-                '+doc/tags' not in run('git', 'diff', '--cached', '.gitignore', cwd=directory, capture=True).splitlines()):
+            'doc/tags' not in self.get_staged_contents(plugin_name, '.gitignore').splitlines()):
             self.logger.fatal("The .gitignore file does not exclude doc/tags! Please resolve before committing.")
             sys.exit(1)
 
@@ -836,7 +835,16 @@ class VimPluginManager:
         """
         directory = self.plugins[plugin_name]['directory']
         filename = os.path.relpath(os.path.abspath(filename), os.path.abspath(directory))
-        return run('git', 'show', '%s:%s' % (revision, filename), cwd=directory, capture=True)
+        try:
+            return run('git', 'show', '%s:%s' % (revision, filename), cwd=directory, capture=True, silent=True)
+        except ExternalCommandFailed:
+            return ''
+
+    def get_staged_contents(self, plugin_name, filename):
+        """
+        Get the staged contents of a file.
+        """
+        return self.get_committed_contents(plugin_name, filename, revision='')
 
     def find_version_in_repository(self, plugin_name, branch_name='master'):
         """
@@ -907,6 +915,10 @@ def run(*args, **kw):
         context['stdin'] = subprocess.PIPE
     if kw.get('capture', False):
         context['stdout'] = subprocess.PIPE
+    if kw.get('silent', False):
+        if 'stdout' not in context:
+            context['stdout'] = subprocess.PIPE
+        context['stderr'] = subprocess.PIPE
     process = subprocess.Popen(args, **context)
     stdout, stderr = process.communicate(input=kw.get('input', None))
     if kw.get('check', True) and process.returncode != 0:
