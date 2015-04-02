@@ -702,13 +702,13 @@ class VimPluginManager:
         of a Vim plug-in using the html2vimdoc.py Python module.
         """
         directory = self.plugins[plugin_name]['directory']
+        vfs = GitVFS(directory)
         readme = os.path.join(directory, 'README.md')
         help_dir = os.path.join(directory, 'doc')
         help_file = self.plugins[plugin_name]['help-file']
         help_path = os.path.join(help_dir, help_file)
         self.logger.info("Converting %s to %s ..", readme, help_path)
-        with open(readme) as handle:
-            markdown = handle.read()
+        markdown = vfs.read('README.md')
         html = html2vimdoc.markdown_to_html(markdown, [])
         vimdoc = html2vimdoc.html2vimdoc(html, filename=help_file)
         if not os.path.isdir(help_dir):
