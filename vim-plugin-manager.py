@@ -883,6 +883,8 @@ class ExternalCommandFailed(Exception):
         super(ExternalCommandFailed, self).__init__(msg)
         self.command = command
 
+# TODO Merge GitVFS into vcs-repo-mgr? (don't forget about get_committed_contents() and get_staged_contents())
+
 class GitVFS(object):
 
     """
