@@ -1,9 +1,10 @@
 #!/usr/bin/env python
+# vim: fileencoding=utf-8 ft=python ts=4 sw=4 et :
 
 # Convert HTML (and Markdown) documents to Vim help files
 #
 # Author: Peter Odding <peter@peterodding.com>
-# Last Change: June 2, 2013
+# Last Change: May 21, 2015
 # URL: http://peterodding.com/code/vim/tools/
 #
 # Missing features:
@@ -44,8 +45,8 @@ The easiest way to install them is in a Python virtual environment:
   # Create the virtual environment.
   virtualenv html2vimdoc
 
-  # Install the dependencies.
-  html2vimdoc/bin/pip install beautifulsoup coloredlogs
+  # Install the dependencies (Markdown is optional).
+  html2vimdoc/bin/pip install beautifulsoup coloredlogs markdown
 
   # Run the program.
   html2vimdoc/bin/python ./html2vimdoc.py --help
@@ -181,7 +182,7 @@ def html2vimdoc(html, title='', filename='', url='', content_selector='#content'
     Convert HTML documents to the Vim help file format.
     """
     logger.info("Parsing HTML ..")
-    html = decode_hexadecimal_entities(html)
+    html = remove_hexadecimal_character_references(html)
     tree = BeautifulSoup(html, convertEntities=BeautifulSoup.ALL_ENTITIES)
     logger.info("Transforming contents ..")
     title = select_title(tree, title)
@@ -273,25 +274,17 @@ def deduplicate_delimiters(output):
     while output and isinstance(output[-1], OutputDelimiter) and output[-1].string.isspace():
         output.pop(-1)
 
-def decode_hexadecimal_entities(html):
+def remove_hexadecimal_character_references(html):
     """
-    Based on my testing BeautifulSoup doesn't support hexadecimal HTML
-    entities, so we have to decode them ourselves :-(
+    BeautifulSoup doesn't support hexadecimal character references but it does
+    support decimal character references, so by converting one to the other we
+    can get it to convert everything for us... (kind of silly that every caller
+    of BeautifulSoup is forced to do this ಠ_ಠ).
     """
-    # If we happen to decode an entity into one of these characters, we
-    # should never insert it literally into the HTML because we'll screw
-    # up the syntax.
-    unsafe_to_decode = {
-            '<': '&lt;',
-            '>': '&gt;',
-            '"': '&quot;',
-            "'": '&apos;',
-            '&': '&amp;',
-    }
-    def decode_entity(match):
-        character = chr(int(match.group(1), 16))
-        return unsafe_to_decode.get(character, character)
-    return re.sub(r'&#x([0-9A-Fa-f]+);', decode_entity, html)
+    def hex_to_dec_entity(match):
+        code_point = int(match.group(1), 16)
+        return '&#%d;' % code_point
+    return re.sub(r'&#x([0-9A-Fa-f]+);', hex_to_dec_entity, html)
 
 def find_root_node(tree, selector):
     """
@@ -1267,5 +1260,3 @@ def flatten(l):
 
 if __name__ == '__main__':
     main()
-
-# vim: ft=python ts=4 sw=4 et
